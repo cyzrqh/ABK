@@ -1291,6 +1291,12 @@ jobs:
           esac
 
           if [ -d "KernelSU/.git" ]; then
+            ACTUAL_KSU_SHA=$(git -C KernelSU rev-parse HEAD)
+            if [[ "$BRANCH" =~ ^[A-Fa-f0-9]{40}$ ]] && [ "$ACTUAL_KSU_SHA" != "$BRANCH" ]; then
+              echo "::error::KernelSU checkout mismatch: requested $BRANCH, got $ACTUAL_KSU_SHA"
+              exit 1
+            fi
+
             KSU_LATEST_COMMIT_DATE=$(git -C KernelSU log -1 --date=format:'%Y-%m-%d %H:%M:%S %z' --format='%cd')
             echo "KSU_LATEST_COMMIT_DATE=$KSU_LATEST_COMMIT_DATE" >> $GITHUB_ENV
           else

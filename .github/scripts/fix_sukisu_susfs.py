@@ -62,6 +62,17 @@ int ksu_handle_stat(int *dfd, struct filename **filename, int *flags);
 int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);
 #endif"""
     modern_stat = "long ksu_handle_stat_sucompat(int orig_nr, struct pt_regs *regs);" in text
+    modern_execveat = (
+        "long ksu_handle_execveat_sucompat(const char __user **filename_user, "
+        "int orig_nr, struct pt_regs *regs);"
+    )
+    modern_execveat_syscall = (
+        "long ksu_handle_execveat_sucompat_syscall(const char __user **filename_user, "
+        "int orig_nr, struct pt_regs *regs);"
+    )
+    if modern_stat and modern_execveat in text:
+        text = text.replace(modern_execveat, modern_execveat_syscall, 1)
+
     if "struct filename **filename" not in text and not modern_stat:
         if old not in text:
             die("missing sucompat stat prototype")
@@ -113,6 +124,17 @@ def patch_sucompat_c(path, changed_files):
     )
 
     modern_layout = "long ksu_handle_stat_sucompat(int orig_nr, struct pt_regs *regs)" in text
+
+    modern_execveat = (
+        "long ksu_handle_execveat_sucompat(const char __user **filename_user, "
+        "int orig_nr, struct pt_regs *regs)"
+    )
+    modern_execveat_syscall = (
+        "long ksu_handle_execveat_sucompat_syscall(const char __user **filename_user, "
+        "int orig_nr, struct pt_regs *regs)"
+    )
+    if modern_layout and modern_execveat in text:
+        text = text.replace(modern_execveat, modern_execveat_syscall, 1)
 
     if not modern_layout and "int ksu_handle_execveat_sucompat" not in text:
         marker = "\nint ksu_handle_faccessat("
@@ -339,10 +361,21 @@ def patch_syscall_bridge(path, changed_files):
         "} else if (ksu_su_compat_enabled) {",
         "} else if (static_branch_likely(&ksu_su_compat_enabled)) {",
     )
+    modern_execveat_call = (
+        "ksu_handle_execveat_sucompat_syscall(filename_user, orig_nr, "
+        "(struct pt_regs *)regs)"
+    )
+    text = text.replace(
+        "ksu_handle_execveat_sucompat(filename_user, orig_nr, (struct pt_regs *)regs)",
+        modern_execveat_call,
+    )
 
     modern_layout = "return ksu_handle_stat_sucompat(orig_nr, (struct pt_regs *)regs);" in text
 
     if modern_layout:
+        if modern_execveat_call not in text:
+            die(f"missing modern execveat sucompat syscall call anchor: {path}")
+
         modern_pattern = re.compile(
             r"long __nocfi ksu_hook_newfstatat\(int orig_nr, const struct pt_regs \*regs\)\n"
             r"\{.*?\n\}\n\nlong __nocfi ksu_hook_faccessat",
@@ -1140,6 +1173,37 @@ def verify(ksu_dir):
         marker in sucompat_text for marker in legacy_sucompat_markers
     ):
         die(f"{sucompat_c} missing supported sucompat marker set")
+
+    inline_execveat = "int ksu_handle_execveat_sucompat(int *fd, struct filename **filename_ptr,"
+    conflicting_syscall_execveat = re.search(
+        r"(?m)^long\s+ksu_handle_execveat_sucompat\s*\(",
+        sucompat_text,
+    )
+    if inline_execveat in sucompat_text and conflicting_syscall_execveat:
+        die(f"{sucompat_c} still has conflicting inline/syscall ksu_handle_execveat_sucompat handlers")
+
+    sucompat_header = (ksu_dir / "feature/sucompat.h").read_text()
+    if inline_execveat in sucompat_header and re.search(
+        r"(?m)^long\s+ksu_handle_execveat_sucompat\s*\(",
+        sucompat_header,
+    ):
+        die(f"{ksu_dir / 'feature/sucompat.h'} still has conflicting inline/syscall execveat declarations")
+
+    syscall_execveat = (
+        "long ksu_handle_execveat_sucompat_syscall(const char __user **filename_user, "
+        "int orig_nr, struct pt_regs *regs)"
+    )
+    if syscall_execveat in sucompat_text:
+        if syscall_execveat + ";" not in sucompat_header:
+            die(f"{ksu_dir / 'feature/sucompat.h'} missing renamed syscall execveat declaration")
+
+        syscall_bridge = (ksu_dir / "hook/syscall_event_bridge.c").read_text()
+        syscall_call = (
+            "ksu_handle_execveat_sucompat_syscall(filename_user, orig_nr, "
+            "(struct pt_regs *)regs)"
+        )
+        if syscall_call not in syscall_bridge:
+            die(f"{ksu_dir / 'hook/syscall_event_bridge.c'} missing renamed syscall execveat call")
 
     selinux_hide = (ksu_dir / "feature/selinux_hide.c").read_text()
     forbidden = (
