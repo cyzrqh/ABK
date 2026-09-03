@@ -43,6 +43,48 @@ def find_ksu_dir(root):
     die("SukiSU source directory not found")
 
 
+def patch_kernel_exec_susfs_include(root, changed_files):
+    kernel_dirs = (root / "common", root)
+    kernel_dir = next((path for path in kernel_dirs if (path / "fs/exec.c").exists()), None)
+    if kernel_dir is None:
+        die("kernel fs/exec.c not found")
+
+    path = kernel_dir / "fs/exec.c"
+    original = path.read_text()
+    text = original
+    call = "susfs_is_current_proc_no_su()"
+    include = "#include <linux/susfs_def.h>"
+
+    # Some 6.12 GKI tags add another include after linux/ksm.h. The upstream
+    # SUSFS patch then rejects only its include hunk while still applying the
+    # later execve hook hunk, leaving this call without a declaration.
+    if call not in text:
+        return
+
+    header = kernel_dir / "include/linux/susfs_def.h"
+    if not header.is_file():
+        die(f"{path} uses {call}, but {header} is missing")
+    if "susfs_is_current_proc_no_su(" not in header.read_text():
+        die(f"{header} does not declare susfs_is_current_proc_no_su()")
+
+    if include not in text:
+        guarded_include = (
+            "#ifdef CONFIG_KSU_SUSFS\n"
+            f"{include}\n"
+            "#endif\n"
+        )
+        for anchor in ("#include <linux/ksm.h>\n", "#include <linux/uaccess.h>\n"):
+            if anchor in text:
+                text = text.replace(anchor, anchor + guarded_include, 1)
+                break
+        else:
+            die(f"{path} has no stable include anchor for {include}")
+
+    if include not in text:
+        die(f"failed to add {include} to {path}")
+    write_if_changed(path, text, original, changed_files)
+
+
 def patch_sucompat_header(path, changed_files):
     original = path.read_text()
     text = original
@@ -1230,6 +1272,7 @@ def main():
     ksu_dir = find_ksu_dir(root)
     changed_files = []
 
+    patch_kernel_exec_susfs_include(root, changed_files)
     patch_sucompat_header(ksu_dir / "feature/sucompat.h", changed_files)
     patch_sucompat_c(ksu_dir / "feature/sucompat.c", changed_files)
     patch_symbol_resolver(ksu_dir / "infra/symbol_resolver.c", changed_files)
