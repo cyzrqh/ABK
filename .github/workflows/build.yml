@@ -2503,6 +2503,96 @@ jobs:
 
             ensure_susfs_namespace_tail
 
+            ensure_susfs_namespace_headers() {
+              local file="./fs/namespace.c"
+              [ -f "$file" ] || return 0
+
+              python3 - "$file" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          path = Path(sys.argv[1])
+          original = path.read_text()
+
+          def blank(match):
+              return "".join("\n" if char == "\n" else " " for char in match[0])
+
+          def c_code(text):
+              return re.sub(
+                  r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'',
+                  blank, text, flags=re.S,
+              )
+
+          hooks = re.compile(
+              r"\b(?:VFSMOUNT_MNT_FLAGS_KSU_UNSHARED_MNT|DEFAULT_KSU_MNT_(?:GROUP_)?ID|"
+              r"susfs_is_current_ksu_domain|susfs_is_current_proc_umounted|"
+              r"susfs_is_sdcard_android_data_not_decrypted|CL_COPY_MNT_NS)\b"
+          )
+
+          def first_hook(text):
+              code = c_code(text)
+              # Declarations and preprocessor tests are not C call sites.
+              # In particular, our own #ifndef must not break a second pass.
+              code = re.sub(r"(?m)^[ \t]*extern\b[^;]*;|^[ \t]*#(?:[^\n\\]|\\[^\n]|\\\n)*", blank, code)
+              return hooks.search(code)
+
+          if first_hook(original) is None:
+              raise SystemExit(0)
+
+          text = original
+          include = re.compile(r'(?m)^[ \t]*#[ \t]*include[ \t]*[<"]linux/susfs_def\.h[>"][^\n]*\n?')
+          if not include.search(text):
+              for header in ("mnt_idmapping.h", "fs_context.h", "shmem_fs.h", "fs.h"):
+                  anchor = re.search(
+                      r"(?m)^[ \t]*#[ \t]*include[ \t]*<linux/" + re.escape(header) + r">[^\n]*\n",
+                      text,
+                  )
+                  if anchor:
+                      block = "#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_def.h>\n#endif\n"
+                      text = text[:anchor.end()] + block + text[anchor.end():]
+                      break
+              else:
+                  raise SystemExit(f"{path}: cannot find a known include anchor for SUSFS namespace declarations")
+
+          missing = []
+          declarations = (
+              ("susfs_is_current_ksu_domain", r"(?:extern\s+)?bool\s+susfs_is_current_ksu_domain\s*\(\s*void\s*\)\s*[;{]", "extern bool susfs_is_current_ksu_domain(void);"),
+              ("susfs_is_sdcard_android_data_not_decrypted", r"extern\s+struct\s+static_key_true\s+susfs_is_sdcard_android_data_not_decrypted\s*;", "extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;"),
+          )
+          for symbol, pattern, declaration in declarations:
+              code = c_code(text)
+              existing = re.search(pattern, code)
+              if existing:
+                  if existing.start() > first_hook(text).start():
+                      raise SystemExit(f"{path}: {symbol} is declared after its first SUSFS namespace use")
+                  continue
+              if re.search(r"(?m)^[ \t]*extern\b[^;]*\b" + symbol + r"\b[^;]*;", code):
+                  raise SystemExit(f"{path}: incompatible existing declaration for {symbol}")
+              missing.append(declaration)
+
+          define = re.search(r"(?m)^[ \t]*#[ \t]*define[ \t]+CL_COPY_MNT_NS\b", c_code(text))
+          if define:
+              if define.start() > first_hook(text).start():
+                  raise SystemExit(f"{path}: CL_COPY_MNT_NS is defined after its first use")
+          else:
+              missing.extend(("#ifndef CL_COPY_MNT_NS", "#define CL_COPY_MNT_NS BIT(25)", "#endif"))
+
+          if missing:
+              anchor = re.search(r'(?m)^[ \t]*#[ \t]*include[ \t]+"internal\.h"[^\n]*\n', text)
+              if anchor is None or anchor.end() > first_hook(text).start():
+                  raise SystemExit(f"{path}: cannot find internal.h before the SUSFS namespace hooks")
+              block = "\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n" + "\n".join(missing) + "\n#endif\n"
+              text = text[:anchor.end()] + block + text[anchor.end():]
+
+          if include.search(text).end() > first_hook(text).start():
+              raise SystemExit(f"{path}: susfs_def.h is included after the first SUSFS namespace use")
+          if text != original:
+              path.write_text(text)
+              print(f"已补齐 {path} 的 SUSFS include、extern 与 namespace flag 声明")
+          PY
+            }
+
             ensure_susfs_super_compat() {
               local file="./fs/super.c"
               [ -f "$file" ] || return 0
@@ -2646,15 +2736,6 @@ jobs:
                 if [[ "$ABK_OS_PATCH_LEVEL" != "2024-05" ]]; then
                   fix_task_mmu_show_pad
                 fi
-                # 修复 6.1 LTS: SUSFS 补丁在 namespace.c 头部 hunk 因上下文不匹配而失败，
-                # 导致函数体中的 SUSFS 符号（DEFAULT_KSU_MNT_ID 等）未声明
-                if grep -q 'DEFAULT_KSU_MNT_ID\|susfs_mnt_id_ida' ./fs/namespace.c && ! grep -qF '#include <linux/susfs_def.h>' ./fs/namespace.c; then
-                  echo "检测到 namespace.c 缺少 susfs_def.h，注入声明..."
-                  sed -i '/#include <linux\/mnt_idmapping.h>/a #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n#include <linux\/susfs_def.h>\n#endif' ./fs/namespace.c
-                  if ! grep -q 'extern bool susfs_is_current_ksu_domain' ./fs/namespace.c; then
-                    sed -i '/#include "internal.h"/a \\n#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\nextern bool susfs_is_current_ksu_domain(void);\nextern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n\n#define CL_COPY_MNT_NS BIT(25)\n\n#endif' ./fs/namespace.c
-                  fi
-                fi
               fi
             fi
 
@@ -2703,6 +2784,7 @@ jobs:
 
             # A rejected header hunk can leave working SUSFS hooks without their
             # macro definitions on any sublevel, including older 5.15 releases.
+            ensure_susfs_namespace_headers
             fix_missing_susfs_def ./fs/proc/task_mmu.c
             fix_missing_susfs_def ./mm/memory.c
             fix_task_mmu_vma_pad_start

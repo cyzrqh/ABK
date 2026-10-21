@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 
 
@@ -349,7 +350,16 @@ int main(void)
                 result = subprocess.run([str(binary)], capture_output=True, encoding="utf-8", errors="replace")
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             finally:
-                binary.unlink(missing_ok=True)
+                # Windows can briefly retain a handle after the test exits.
+                # Match the existing execve fixture's bounded cleanup retry.
+                for attempt in range(50):
+                    try:
+                        binary.unlink(missing_ok=True)
+                        break
+                    except PermissionError:
+                        if os.name != "nt" or attempt == 49:
+                            raise
+                        time.sleep(0.1)
 
 
 if __name__ == "__main__":

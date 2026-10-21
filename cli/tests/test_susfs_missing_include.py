@@ -29,17 +29,140 @@ class SusfsMissingIncludeTests(unittest.TestCase):
                 "\n          PY", 1
             )[0]
         )
+        namespace_helper = step.split("ensure_susfs_namespace_headers() {", 1)[1].split(
+            "\n            }", 1
+        )[0]
+        cls.namespace_repair = textwrap.dedent(
+            namespace_helper.split('python3 - "$file" <<\'PY\'\n', 1)[1].split(
+                "\n          PY", 1
+            )[0]
+        )
         cls.step = step
 
     def apply_repair(self, path):
+        return self.run_repair(self.repair, path)
+
+    def run_repair(self, repair, path):
         result = subprocess.run(
-            [sys.executable, "-c", self.repair, str(path)],
+            [sys.executable, "-c", repair, str(path)],
             capture_output=True,
             encoding="utf-8",
             env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result
+
+    @staticmethod
+    def namespace_source(anchor="#include <linux/fs_context.h>\n", declarations=""):
+        return anchor + '#include "internal.h"\n' + declarations + (
+            "#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n"
+            "int namespace_case(void) {\n"
+            "  return VFSMOUNT_MNT_FLAGS_KSU_UNSHARED_MNT + DEFAULT_KSU_MNT_ID\n"
+            "    + DEFAULT_KSU_MNT_GROUP_ID + CL_COPY_MNT_NS\n"
+            "    + susfs_is_current_ksu_domain() + susfs_is_current_proc_umounted()\n"
+            "    + susfs_is_sdcard_android_data_not_decrypted.enabled;\n"
+            "}\n#endif\n"
+        )
+
+    def test_namespace_rejected_header_hunk_is_restored_on_all_515_sublevels(self):
+        for sublevel, header in ((41, "fs.h"), (94, "fs_context.h"), (194, "shmem_fs.h")):
+            with self.subTest(sublevel=sublevel), tempfile.TemporaryDirectory() as temp:
+                path = Path(temp) / "namespace.c"
+                path.write_text(self.namespace_source(f"#include <linux/{header}>\n"), encoding="utf-8")
+                self.run_repair(self.namespace_repair, path)
+                repaired = path.read_text(encoding="utf-8")
+                for declaration in (
+                    "#include <linux/susfs_def.h>",
+                    "extern bool susfs_is_current_ksu_domain(void);",
+                    "extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;",
+                    "#define CL_COPY_MNT_NS BIT(25)",
+                ):
+                    self.assertEqual(repaired.count(declaration), 1)
+                    self.assertLess(repaired.index(declaration), repaired.index("int namespace_case"))
+                self.assertIn("#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT", repaired)
+                self.run_repair(self.namespace_repair, path)
+                self.assertEqual(path.read_text(encoding="utf-8"), repaired)
+
+    def test_namespace_partial_and_complete_headers_preserve_existing_declarations(self):
+        include = "#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_def.h>\n#endif\n"
+        domain = "extern bool susfs_is_current_ksu_domain(void);\n"
+        key = "extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;\n"
+        flag = "#define CL_COPY_MNT_NS BIT(25)\n"
+        for declarations in ("", domain, key + flag, domain + key + flag):
+            with self.subTest(declarations=declarations), tempfile.TemporaryDirectory() as temp:
+                path = Path(temp) / "namespace.c"
+                guarded = "#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT\n" + declarations + "#endif\n"
+                source = self.namespace_source("#include <linux/mnt_idmapping.h>\n" + include, guarded)
+                path.write_text(source, encoding="utf-8")
+                self.run_repair(self.namespace_repair, path)
+                repaired = path.read_text(encoding="utf-8")
+                for declaration in ("#include <linux/susfs_def.h>", domain.strip(), key.strip(), flag.strip()):
+                    self.assertEqual(repaired.count(declaration), 1)
+                if declarations == domain + key + flag:
+                    self.assertEqual(repaired, source)
+
+    def test_namespace_without_hooks_or_only_comments_is_unchanged(self):
+        for source in (
+            '#include "internal.h"\nint ordinary(void) { return 0; }\n',
+            "/* DEFAULT_KSU_MNT_ID susfs_is_current_ksu_domain CL_COPY_MNT_NS */\n"
+            'const char *note = "susfs_is_current_proc_umounted";\n',
+            "#ifndef CL_COPY_MNT_NS\n#define CL_COPY_MNT_NS BIT(25)\n#endif\n",
+        ):
+            with self.subTest(source=source), tempfile.TemporaryDirectory() as temp:
+                path = Path(temp) / "namespace.c"
+                path.write_text(source, encoding="utf-8")
+                self.run_repair(self.namespace_repair, path)
+                self.assertEqual(path.read_text(encoding="utf-8"), source)
+
+    def test_namespace_unknown_anchors_and_incompatible_declarations_fail_without_writes(self):
+        sources = (
+            self.namespace_source("#include <linux/unknown.h>\n"),
+            self.namespace_source().replace('#include "internal.h"\n', ""),
+            self.namespace_source(declarations="extern int susfs_is_current_ksu_domain(void);\n"),
+        )
+        for source in sources:
+            with self.subTest(source=source), tempfile.TemporaryDirectory() as temp:
+                path = Path(temp) / "namespace.c"
+                path.write_text(source, encoding="utf-8")
+                with self.assertRaises(AssertionError):
+                    self.run_repair(self.namespace_repair, path)
+                self.assertEqual(path.read_text(encoding="utf-8"), source)
+
+    @unittest.skipUnless(COMPILER, "requires a C compiler")
+    def test_namespace_full_missing_hunk_fails_before_repair_and_compiles_after(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "linux").mkdir()
+            (root / "linux/fs_context.h").write_text(
+                "#include <stdbool.h>\n#define BIT(n) (1UL << (n))\n"
+                "struct static_key_true { int enabled; };\n", encoding="utf-8"
+            )
+            (root / "linux/susfs_def.h").write_text(
+                "#define VFSMOUNT_MNT_FLAGS_KSU_UNSHARED_MNT BIT(24)\n"
+                "#define DEFAULT_KSU_MNT_ID 100000\n"
+                "#define DEFAULT_KSU_MNT_GROUP_ID 1000\n"
+                "static inline bool susfs_is_current_proc_umounted(void) { return false; }\n",
+                encoding="utf-8",
+            )
+            (root / "internal.h").write_text("/* Kernel local declarations. */\n", encoding="utf-8")
+            path = root / "namespace.c"
+            path.write_text(self.namespace_source(), encoding="utf-8")
+            command = [COMPILER, "-std=gnu11", "-Werror=implicit-function-declaration", "-fsyntax-only",
+                       "-DCONFIG_KSU_SUSFS", "-DCONFIG_KSU_SUSFS_SUS_MOUNT", "-I", str(root), str(path)]
+            broken = subprocess.run(command, capture_output=True, encoding="utf-8", errors="replace")
+            self.assertNotEqual(broken.returncode, 0)
+            self.assertIn("CL_COPY_MNT_NS", broken.stderr)
+            self.assertIn("susfs_is_current_ksu_domain", broken.stderr)
+            self.run_repair(self.namespace_repair, path)
+            subprocess.run(command, check=True, capture_output=True, encoding="utf-8", errors="replace")
+            subprocess.run([part for part in command if not part.startswith("-DCONFIG_")],
+                           check=True, capture_output=True, encoding="utf-8", errors="replace")
+
+    def test_namespace_repair_runs_outside_sublevel_specific_branches(self):
+        tail = self.step.split("# Android 16 - 6.12 修复", 1)[1]
+        calls = tail.split("\n            fi", 1)[1]
+        self.assertIn("ensure_susfs_namespace_headers", calls)
+        self.assertNotIn("sub_in_range", calls)
 
     def test_repair_uses_utf8_with_an_ascii_parent_console(self):
         with tempfile.TemporaryDirectory() as temp:
