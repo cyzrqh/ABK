@@ -1,4 +1,5 @@
 """Exercise the real workflow repair for rejected SUSFS include hunks."""
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -6,6 +7,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from unittest.mock import patch
 
 
 WORKFLOW = Path(__file__).resolve().parents[2] / ".github/workflows/build.yml"
@@ -30,12 +32,38 @@ class SusfsMissingIncludeTests(unittest.TestCase):
         cls.step = step
 
     def apply_repair(self, path):
-        subprocess.run(
+        result = subprocess.run(
             [sys.executable, "-c", self.repair, str(path)],
-            check=True,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
         )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result
+
+    def test_repair_uses_utf8_with_an_ascii_parent_console(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "内核源码.c"
+            path.write_text(
+                "/* 保留源码注释 */\n#include <linux/mm.h>\n"
+                "int mapped(void *inode) { return SUSFS_IS_INODE_SUS_MAP(inode); }\n",
+                encoding="utf-8",
+            )
+            with patch.dict(os.environ, {"PYTHONUTF8": "0", "PYTHONIOENCODING": "ascii"}):
+                result = self.apply_repair(path)
+            self.assertIn("已修复", result.stdout)
+            self.assertIn(path.name, result.stdout)
+            repaired = path.read_text(encoding="utf-8")
+            self.assertIn("保留源码注释", repaired)
+            self.assertIn("#include <linux/susfs_def.h>", repaired)
+
+    def test_repair_failure_reports_decoded_child_diagnostics(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "缺失源码.c"
+            with self.assertRaises(AssertionError) as failure:
+                self.apply_repair(path)
+            self.assertIn("FileNotFoundError", str(failure.exception))
+            self.assertIn(path.name, str(failure.exception))
 
     def test_task_mmu_repair_covers_old_and_new_515_sources(self):
         for sublevel in (78, 94, 149):
@@ -136,15 +164,15 @@ class SusfsMissingIncludeTests(unittest.TestCase):
                 COMPILER, "-std=gnu11", "-Werror=implicit-function-declaration",
                 "-fsyntax-only", "-DCONFIG_KSU_SUSFS", "-I", str(root), str(source),
             ]
-            broken = subprocess.run(command, capture_output=True, text=True)
+            broken = subprocess.run(command, capture_output=True, encoding="utf-8", errors="replace")
             self.assertNotEqual(broken.returncode, 0)
             self.assertIn("SUSFS_IS_INODE_OPEN_REDIRECT", broken.stderr)
             self.assertIn("SUSFS_IS_INODE_SUS_MAP", broken.stderr)
             self.apply_repair(source)
-            subprocess.run(command, check=True, capture_output=True, text=True)
+            subprocess.run(command, check=True, capture_output=True, encoding="utf-8", errors="replace")
             subprocess.run(
                 [part for part in command if part != "-DCONFIG_KSU_SUSFS"],
-                check=True, capture_output=True, text=True,
+                check=True, capture_output=True, encoding="utf-8", errors="replace",
             )
 
 

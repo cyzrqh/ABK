@@ -300,6 +300,7 @@ static int __nocfi symbol(void)
 #include <stdbool.h>
 #include <stddef.h>
 #include <string.h>
+#include <sys/types.h>
 #define CONFIG_KSU_SUSFS 1
 #define __read_mostly
 #define __nocfi
@@ -307,7 +308,6 @@ static int __nocfi symbol(void)
 #define LSM_HOOK_INIT(head, callback) callback
 #define SEL_ACCESS 0
 #define SEL_CONTEXT 1
-typedef long ssize_t;
 struct file { int unused; };
 typedef int (*setprocattr_fn)(const char *, void *, size_t);
 typedef ssize_t (*write_op_fn)(struct file *, char *, size_t);
@@ -343,10 +343,10 @@ int main(void)
             c_path = root / "hooks.c"
             binary = root / ("hooks.exe" if os.name == "nt" else "hooks")
             c_path.write_text(source, encoding="utf-8")
-            compiled = subprocess.run([shutil.which("cc"), "-std=gnu11", "-Werror=implicit-function-declaration", str(c_path), "-o", str(binary)], capture_output=True, text=True)
+            compiled = subprocess.run([shutil.which("cc"), "-std=gnu11", "-Werror=implicit-function-declaration", str(c_path), "-o", str(binary)], capture_output=True, encoding="utf-8", errors="replace")
             self.assertEqual(compiled.returncode, 0, compiled.stderr)
             try:
-                result = subprocess.run([str(binary)], capture_output=True, text=True)
+                result = subprocess.run([str(binary)], capture_output=True, encoding="utf-8", errors="replace")
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             finally:
                 binary.unlink(missing_ok=True)
