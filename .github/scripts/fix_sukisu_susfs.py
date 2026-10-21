@@ -43,6 +43,184 @@ def find_ksu_dir(root):
     die("SukiSU source directory not found")
 
 
+PREINIT_SYMBOLS = ("ksu_setup_preinit_file", "ksu_preinit_handle_post_execveat")
+PREINIT_DISABLE = (
+    "/* ABK: this KernelSU source has no SUSFS direct preinit backend. */\n"
+    "#define KSU_NO_PREINIT 1\n"
+)
+SELINUX_DIRECT_HOOKS = (
+    ("my_setprocattr", "security/selinux/hooks.c", "selinux_setprocattr", "handle_selinux_setprocattr"),
+    ("my_write_context", "security/selinux/selinuxfs.c", "sel_write_context", "handle_sel_write_context"),
+    ("my_write_access", "security/selinux/selinuxfs.c", "sel_write_access", "handle_sel_write_access"),
+)
+
+
+def c_code(text):
+    """Hide comments and strings before looking for actual C definitions."""
+    return re.sub(
+        r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'',
+        lambda match: "\n" * match.group(0).count("\n"),
+        text,
+        flags=re.S,
+    )
+
+
+def function_definitions(text, symbol):
+    pattern = re.compile(
+        r"(?m)^[ \t]*(?P<qualifiers>(?:[A-Za-z_]\w*[ \t*]+)+)"
+        + re.escape(symbol)
+        + r"[ \t]*\([^;{}]*\)[ \t\r\n]*\{"
+    )
+    definitions = []
+    for match in pattern.finditer(c_code(text)):
+        qualifiers = match["qualifiers"].split()
+        if qualifiers[0] in {"return", "if", "while", "switch", "sizeof"}:
+            continue
+        definitions.append("static" if "static" in qualifiers else "global")
+    return definitions
+
+
+def ksu_hook_providers(ksu_dir, symbols):
+    providers = {symbol: [] for symbol in symbols}
+    for path in ksu_dir.rglob("*.c"):
+        text = path.read_text()
+        for symbol in symbols:
+            for linkage in function_definitions(text, symbol):
+                providers[symbol].append((path, linkage))
+    return providers
+
+
+def preinit_references_are_guarded(text):
+    stack = []
+    for line in c_code(text).splitlines():
+        directive = re.match(r"\s*#\s*(if|ifdef|ifndef|elif|else|endif)\b(.*)", line)
+        if directive:
+            operation, condition = directive.groups()
+            if operation in {"if", "ifdef", "ifndef"}:
+                stack.append(operation == "ifndef" and condition.strip() == "KSU_NO_PREINIT")
+            elif operation in {"elif", "else"}:
+                if not stack:
+                    return False
+                stack[-1] = False
+            elif not stack:
+                return False
+            else:
+                stack.pop()
+            continue
+        if any(re.search(r"\b" + symbol + r"\b", line) for symbol in PREINIT_SYMBOLS):
+            if not any(stack):
+                return False
+    return not stack
+
+
+def restore_native_selinux_callback(text, symbol, native, wrapper, path):
+    """Remove only the known SUSFS forwarding wrapper and its callback slot."""
+    original = text
+    declaration = re.compile(
+        r"(?m)^[ \t]*extern[ \t]+[^;{}]*\b"
+        + re.escape(symbol)
+        + r"\s*\([^;{}]*\);[^\n]*\n?"
+    )
+    text = declaration.sub("", text)
+    if re.search(r"\b" + re.escape(symbol) + r"\b", c_code(text)) is None:
+        return text
+
+    wrapper_pattern = re.compile(
+        r"(?m)^[ \t]*static[ \t]+(?:int|ssize_t)[ \t]+"
+        + re.escape(wrapper)
+        + r"\s*\([^;{}]*\)\s*\{(?P<body>[^{}]*)\}[^\n]*\n?"
+    )
+    matches = list(wrapper_pattern.finditer(text))
+    if len(matches) != 1:
+        die(f"{path}: unsupported SUSFS wrapper for {symbol}")
+    match = matches[0]
+    body = c_code(match["body"])
+    expected = re.compile(
+        r"\s*if\s*\([^;{}]*\)\s*return\s+"
+        + re.escape(symbol)
+        + r"\s*\([^;{}]*\);\s*return\s+"
+        + re.escape(native)
+        + r"\s*\([^;{}]*\);\s*\Z",
+        re.S,
+    )
+    if not expected.fullmatch(body):
+        die(f"{path}: refusing to discard unfamiliar {wrapper} behavior")
+
+    # Register the actual native function, not a second wrapper.  The SukiSU
+    # runtime LSM hook locates this exact target before replacing the slot.
+    if symbol == "my_setprocattr":
+        callback = re.compile(r"(LSM_HOOK_INIT\(\s*setprocattr\s*,\s*)" + wrapper + r"(\s*\))")
+    else:
+        entry = "SEL_CONTEXT" if symbol == "my_write_context" else "SEL_ACCESS"
+        callback = re.compile(r"(\[\s*" + entry + r"\s*\]\s*=\s*)" + wrapper + r"\b")
+    if len(callback.findall(text)) != 1:
+        die(f"{path}: missing unique {wrapper} callback registration")
+    text = text[:match.start()] + text[match.end():]
+    text = re.sub(
+        r"(?m)^[ \t]*static[ \t]+(?:int|ssize_t)[ \t]+" + wrapper + r"\s*\([^;{}]*\);[^\n]*\n?",
+        "",
+        text,
+    )
+    text = callback.sub(lambda match: match[1] + native + (match[2] if match.lastindex == 2 else ""), text)
+    if re.search(r"\b(?:" + re.escape(symbol) + "|" + re.escape(wrapper) + r")\b", c_code(text)):
+        die(f"{path}: unresolved SUSFS direct hook after restoring {native}")
+    if text == original:
+        die(f"{path}: {symbol} compatibility change was not applied")
+    return text
+
+
+def patch_kernel_hook_compat(root, ksu_dir, changed_files):
+    """Match new SUSFS call sites to the pinned SukiSU tree's real abilities."""
+    common = root / "common" if (root / "common").is_dir() else root
+    symbols = PREINIT_SYMBOLS + tuple(item[0] for item in SELINUX_DIRECT_HOOKS)
+    providers = ksu_hook_providers(ksu_dir, symbols)
+    pending = {}
+
+    exec_path = common / "fs/exec.c"
+    if exec_path.is_file():
+        original = exec_path.read_text()
+        if any(re.search(r"\b" + symbol + r"\b", c_code(original)) for symbol in PREINIT_SYMBOLS):
+            available = [any(linkage == "global" for _, linkage in providers[symbol]) for symbol in PREINIT_SYMBOLS]
+            if any(available) and not all(available):
+                die(f"{exec_path}: incomplete SUSFS preinit backend; both global functions are required")
+            if all(available):
+                text = original.replace(PREINIT_DISABLE, "", 1)
+            else:
+                if not preinit_references_are_guarded(original):
+                    die(f"{exec_path}: missing KSU_NO_PREINIT guards for unsupported preinit calls")
+                if not re.search(r"(?m)^\s*#\s*ifndef\s+KSU_NO_PREINIT\b", original):
+                    die(f"{exec_path}: unsupported preinit calls lack the upstream disable switch")
+                text = original if re.search(r"(?m)^\s*#\s*define\s+KSU_NO_PREINIT\b", original) else PREINIT_DISABLE + original
+            pending[exec_path] = (original, text)
+
+    for symbol, relative, native, wrapper in SELINUX_DIRECT_HOOKS:
+        path = common / relative
+        if not path.is_file():
+            continue
+        if path in pending:
+            original, text = pending[path]
+        else:
+            original = text = path.read_text()
+        if not re.search(r"\b" + symbol + r"\b", c_code(text)):
+            continue
+        if function_definitions(text, symbol) or any(linkage == "global" for _, linkage in providers[symbol]):
+            continue
+        runtime_sources = [path for path, linkage in providers[symbol] if linkage == "static"]
+        runtime_marker = (
+            r"\bksu_lsm_hook\s*\(\s*&\s*selinux_setprocattr_hook\b"
+            if symbol == "my_setprocattr"
+            else r"\bksu_patch_text\s*\("
+        )
+        if not any(re.search(runtime_marker, c_code(source.read_text())) for source in runtime_sources):
+            die(f"{path}: {symbol} has neither a global provider nor a known SukiSU runtime hook")
+        text = restore_native_selinux_callback(text, symbol, native, wrapper, path)
+        pending[path] = (original, text)
+
+    # Validate every affected source before writing any call site.
+    for path, (original, text) in pending.items():
+        write_if_changed(path, text, original, changed_files)
+
+
 def patch_sucompat_header(path, changed_files):
     original = path.read_text()
     text = original
@@ -1201,6 +1379,7 @@ def main():
     ksu_dir = find_ksu_dir(root)
     changed_files = []
 
+    patch_kernel_hook_compat(root, ksu_dir, changed_files)
     patch_sucompat_header(ksu_dir / "feature/sucompat.h", changed_files)
     patch_sucompat_c(ksu_dir / "feature/sucompat.c", changed_files)
     bridge = ksu_dir / "hook/syscall_event_bridge.c"

@@ -2301,24 +2301,41 @@ jobs:
               fi
             }
 
-            fix_memory_missing_susfs_def() {
-              local file="./mm/memory.c"
+            fix_missing_susfs_def() {
+              local file="$1"
               [ -f "$file" ] || return 0
-              grep -qF 'SUSFS_IS_INODE_SUS_MAP' "$file" || return 0
-              grep -qF '#include <linux/susfs_def.h>' "$file" && return 0
 
-              if grep -qF '#include <linux/zswap.h>' "$file"; then
-                sed -i '/#include <linux\/zswap.h>/a #ifdef CONFIG_KSU_SUSFS\n#include <linux\/susfs_def.h>\n#endif' "$file"
-              elif grep -qF '#include <linux/sched/sysctl.h>' "$file"; then
-                sed -i '/#include <linux\/sched\/sysctl.h>/a #ifdef CONFIG_KSU_SUSFS\n#include <linux\/susfs_def.h>\n#endif' "$file"
-              elif grep -qF '#include <linux/mm_inline.h>' "$file"; then
-                sed -i '/#include <linux\/mm_inline.h>/a #ifdef CONFIG_KSU_SUSFS\n#include <linux\/susfs_def.h>\n#endif' "$file"
-              elif grep -qF '#include <linux/mm.h>' "$file"; then
-                sed -i '/#include <linux\/mm.h>/a #ifdef CONFIG_KSU_SUSFS\n#include <linux\/susfs_def.h>\n#endif' "$file"
-              else
-                sed -i '1i #ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_def.h>\n#endif' "$file"
-              fi
-              echo "已修复 memory.c 缺少 susfs_def.h 问题"
+              python3 - "$file" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          path = Path(sys.argv[1])
+          text = path.read_text()
+          if not re.search(r"\bSUSFS_IS_INODE_(?:SUS_MAP|OPEN_REDIRECT)\s*\(", text):
+              raise SystemExit(0)
+          include = re.compile(r'(?m)^\s*#\s*include\s*[<"]linux/susfs_def\.h[>"]')
+          if include.search(text):
+              raise SystemExit(0)
+
+          block = "#ifdef CONFIG_KSU_SUSFS\n#include <linux/susfs_def.h>\n#endif\n"
+          for anchor in (
+              "#include <linux/zswap.h>\n",
+              "#include <linux/sched/sysctl.h>\n",
+              "#include <linux/mm_inline.h>\n",
+              "#include <linux/mm.h>\n",
+          ):
+              if anchor in text:
+                  text = text.replace(anchor, anchor + block, 1)
+                  break
+          else:
+              text = block + text
+
+          if not include.search(text):
+              raise SystemExit(f"{path}: failed to restore the SUSFS macro declarations")
+          path.write_text(text)
+          print(f"已修复 {path} 缺少 susfs_def.h 问题")
+          PY
             }
 
             fix_selinux_extern_static() {
@@ -2661,7 +2678,6 @@ jobs:
               if sub_in_range "$CURRENT_SUB" 50 58; then
                 apply_susfs_optional_patch "Android 15 - 6.6 task_mmu.c" "a15-6.6/task_mmu.c.patch"
                 fix_task_mmu_unused_vma_decl
-                fix_memory_missing_susfs_def
               fi
             fi
 
@@ -2685,6 +2701,10 @@ jobs:
               fi
             fi
 
+            # A rejected header hunk can leave working SUSFS hooks without their
+            # macro definitions on any sublevel, including older 5.15 releases.
+            fix_missing_susfs_def ./fs/proc/task_mmu.c
+            fix_missing_susfs_def ./mm/memory.c
             fix_task_mmu_vma_pad_start
           fi
 
