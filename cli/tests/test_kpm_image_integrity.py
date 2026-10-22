@@ -128,6 +128,26 @@ class KpmImageIntegrityTests(unittest.TestCase):
         self.assertGreater(KERNEL_MEMORY_SIZE, len(patched))
         self.assertIsInstance(self.validator.validate_images(original, patched), dict)
 
+    def test_runtime_memory_smaller_than_file_is_supported(self) -> None:
+        original, patched = make_images()
+        original = bytearray(original)
+        patched = bytearray(patched)
+        memory_size = 0x6000  # Valid 5.10-style tail beyond runtime memory.
+        struct.pack_into("<Q", original, 16, memory_size)
+        struct.pack_into("<Q", patched, 16, memory_size)
+        setup_u64(patched, SETUP_KERNEL_SIZE, memory_size)
+        setup_u64(patched, SETUP_START_OFFSET, 0xE000)
+        self.assertLess(memory_size, len(original))
+        self.assertIsInstance(self.validator.validate_images(bytes(original), bytes(patched)), dict)
+
+    def test_runtime_placement_must_clear_both_memory_and_file_payload(self) -> None:
+        original, patched = make_images()
+        for start in (0x6000, 0xD000, 0xF000):
+            with self.subTest(start=hex(start)):
+                broken = bytearray(patched)
+                setup_u64(broken, SETUP_START_OFFSET, start)
+                self.assert_invalid(original, bytes(broken))
+
     def test_too_short_or_empty_image_is_rejected(self) -> None:
         original, patched = make_images()
         for short in (b"", patched[:4], patched[:63]):

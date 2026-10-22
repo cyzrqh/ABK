@@ -83,7 +83,9 @@ def validate_images(original: bytes | None, patched: bytes) -> dict:
     require(page_shift in (12, 14, 16), "KPM preset has an invalid page size")
     require(header["page_shift"] in (None, page_shift),
             "KPM page size differs from the ARM64 header")
-    require(kernel_size >= kimg_size and start_offset >= max(kernel_size, kp_offset + kpimg_size + extra_size)
+    # ARM64 runtime memory can be smaller than the on-disk Image (e.g. 5.10
+    # trailing data). KernelPatch places its runtime copy past BOTH regions.
+    require(kernel_size >= 64 and start_offset >= max(kernel_size, kp_offset + kpimg_size + extra_size)
             and start_offset % PAGE == 0, "KPM runtime placement overlaps the kernel or payload")
     if header["memory_size"]:
         require(kernel_size == header["memory_size"], "KPM kernel memory size differs from the ARM64 header")
