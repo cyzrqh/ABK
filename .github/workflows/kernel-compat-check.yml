@@ -7,6 +7,8 @@ on:
       - '.github/workflows/build.yml'
       - '.github/workflows/kernel-compat-check.yml'
       - '.github/scripts/fix_sukisu_susfs.py'
+      - '.github/scripts/validate_kpm_image.py'
+      - 'cli/tests/test_kpm_image_integrity.py'
       - 'cli/tests/test_sukisu_susfs_hook_compat.py'
       - 'cli/tests/test_susfs_missing_include.py'
   pull_request:
@@ -14,6 +16,8 @@ on:
       - '.github/workflows/build.yml'
       - '.github/workflows/kernel-compat-check.yml'
       - '.github/scripts/fix_sukisu_susfs.py'
+      - '.github/scripts/validate_kpm_image.py'
+      - 'cli/tests/test_kpm_image_integrity.py'
       - 'cli/tests/test_sukisu_susfs_hook_compat.py'
       - 'cli/tests/test_susfs_missing_include.py'
 
@@ -30,6 +34,7 @@ jobs:
         run: cc --version
       - name: Test SUSFS headers and kernel hook behavior
         run: |
+          python3 -m unittest discover -s cli/tests -p 'test_kpm_image_integrity.py' -v
           python3 -m unittest discover -s cli/tests -p 'test_susfs_missing_include.py' -v
           python3 -m unittest discover -s cli/tests -p 'test_sukisu_susfs_hook_compat.py' -v
           python3 -m unittest discover -s cli/tests -p 'test_sukisu_execve_session.py' -v

@@ -6706,26 +6706,60 @@ jobs:
               ;;
           esac
 
-          image_backup="$TARGET_PATH/Image.abk-kpm-backup"
-          cp "$TARGET_PATH/Image" "$image_backup"
-          cp -r $SUKISU_PATCHES/kpm/patch_linux "$TARGET_PATH/patch"
-          cd "$TARGET_PATH"
-          chmod 777 patch
-          patch_ok=true
-          if ! { if [ -n "$KPM_PASSWORD" ]; then ./patch -s "$KPM_PASSWORD"; else ./patch; fi; }; then
-            patch_ok=false
-          fi
-          [ -f oImage ] || patch_ok=false
-          if [ "$patch_ok" != true ]; then
-            if [ "${{ inputs.source_mode }}" = "custom_git" ]; then
-              mv "$image_backup" Image
-              echo "::warning::KPM image patch failed; original Image restored."
-              exit 1
-            fi
+          if ! cd "$TARGET_PATH"; then
+            trap - EXIT
+            echo "::error::KPM Image directory is unavailable."
             exit 1
           fi
-          rm -rf Image
-          mv oImage Image
+          image_backup="$TARGET_PATH/Image.abk-kpm-backup"
+          if ! cp -- Image "$image_backup"; then
+            trap - EXIT
+            echo "::error::Cannot back up Image before the KPM patch."
+            exit 1
+          fi
+
+          apply_verified_kpm_patch() {
+            local patch_dir patch_tool masked_password
+            patch_dir="$(mktemp -d "$RUNNER_TEMP/abk-kpm.XXXXXX")" || return 1
+            patch_tool="$patch_dir/patch_linux"
+            # Pin only the KPM executable; keep the other SukiSU patch resources unchanged.
+            curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+              --fail --show-error --silent --location \
+              --retry 3 --retry-all-errors --retry-delay 2 \
+              --connect-timeout 20 --max-time 120 \
+              'https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU_patch/547ae94bcaec53d030398f857950c64662043a5d/kpm/patch_linux' \
+              --output "$patch_tool" || return 1
+            printf '%s  %s\n' \
+              '1bd00563e9d8fbbd11a16c0c1c59c5add406e6c5c92557def50f93d6f0aebe2d' \
+              "$patch_tool" | sha256sum --check --status || return 1
+            chmod 0755 "$patch_tool" || return 1
+            rm -f -- oImage || return 1
+            if [ -n "$KPM_PASSWORD" ]; then
+              # This pinned tool predates upstream log redaction.
+              masked_password="${KPM_PASSWORD//'%'/'%25'}"
+              masked_password="${masked_password//$'\r'/'%0D'}"
+              masked_password="${masked_password//$'\n'/'%0A'}"
+              printf '::add-mask::%s\n' "$masked_password"
+              "$patch_tool" -s "$KPM_PASSWORD" || return 1
+            else
+              "$patch_tool" || return 1
+            fi
+            [ -s oImage ] || return 1
+            python3 "$GITHUB_WORKSPACE/.github/scripts/validate_kpm_image.py" \
+              --original "$image_backup" --patched "$TARGET_PATH/oImage" || return 1
+            mv -f -- oImage Image || return 1
+          }
+
+          if ! apply_verified_kpm_patch; then
+            # Do not let the custom-source feature fallback turn a broken image into a successful build.
+            trap - EXIT
+            if ! cp -- "$image_backup" Image; then
+              echo "::error::Cannot restore Image; the original backup is retained at $image_backup."
+            fi
+            rm -f -- oImage || true
+            echo "::error::KPM patch or image validation failed; no flashable package will be produced."
+            exit 1
+          fi
           rm -f "$image_backup"
 
       - name: 准备 Boot 镜像
