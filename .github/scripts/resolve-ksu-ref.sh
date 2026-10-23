@@ -211,14 +211,16 @@ GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 # (12 处 -Werror + patch reject)，需后续更新补丁"再修"。若全编译失败、需回退到可编译基线，
 # 把下面三行 STABLE 改回 v3.2.5=b0bc817b… 系列，并将 config/config 的 custom 改回 true。
 OFFICIAL_STABLE_REF="08a3b087e49227c8a6731c5f1114998b5e25255b"  # tiann/KernelSU main HEAD (2026-09-30)
-SUKISU_STABLE_REF="cf87e3f4ddd3f6e5464d85acf56aaa6950e70841"    # SukiSU-Ultra main HEAD (2026-09-30)
+# Real UAPI 6 implementation plus matching official manager (run 39975135657).
+# The old cf87e3f4 pin is UAPI 4 even when its network-derived version grows.
+SUKISU_STABLE_REF="b50518a2946b7ca49e933356343526bb7dd81ff8"  # 2026-10-24 UAPI 6
 BAKASU_STABLE_REF="9dbce02e511ea6b6305a238b84e456f6a92e1d0b"  # Baka-SU/BakaSU main HEAD (2026-10-05)
 
 # Dev = 开发层，同为静态钉版；当前与 Stable 同步钉到最新 commit（"都最新"）。
 # Baka-SU/BakaSU 没有 dev 分支（只有 main 与若干 feature 分支），故 BAKASU_DEV_REF 与
 # BAKASU_STABLE_REF 指向同一个 main HEAD；其他变体若有 dev 分支仍可各自独立钉版。
 OFFICIAL_DEV_REF="08a3b087e49227c8a6731c5f1114998b5e25255b"
-SUKISU_DEV_REF="cf87e3f4ddd3f6e5464d85acf56aaa6950e70841"
+SUKISU_DEV_REF="b50518a2946b7ca49e933356343526bb7dd81ff8"
 BAKASU_DEV_REF="9dbce02e511ea6b6305a238b84e456f6a92e1d0b"
 
 # Latest = 最新层，动态追踪各上游 main 的最新（有成功 build-manager/Release run 的）commit。

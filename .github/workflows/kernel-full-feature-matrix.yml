@@ -27,6 +27,10 @@ on:
           - Latest(最新)
           - Custom(自定义)
         default: Dev(开发)
+      custom_ref:
+        description: "自定义引用 (仅在KSU分支为'Custom(自定义)'时使用)"
+        required: false
+        type: string
       version:
         description: "自定义版本名 (可选)"
         required: false
@@ -140,6 +144,9 @@ on:
         type: string
       kernelsu_branch:
         required: true
+        type: string
+      custom_ref:
+        required: false
         type: string
       version:
         required: false
@@ -365,6 +372,15 @@ jobs:
           print(matrix_json)
           PY
 
+  get-ksu-manager:
+    if: inputs.kernelsu_variant != 'None'
+    uses: ./.github/workflows/get-manager.yml
+    secrets: inherit
+    with:
+      kernelsu_variant: ${{ inputs.kernelsu_variant }}
+      ksu_branch: ${{ inputs.kernelsu_branch }}
+      custom_ref: ${{ inputs.custom_ref || '' }}
+
   build-full-feature-matrix:
     name: "${{ matrix.kernel_version }}.${{ matrix.sub_level }}-${{ matrix.android_version }}-${{ matrix.os_patch_level }}"
     needs: prepare-matrix
@@ -382,6 +398,7 @@ jobs:
       os_patch_level: ${{ matrix.os_patch_level }}
       ksu_variant: ${{ inputs.kernelsu_variant }}
       ksu_branch: ${{ inputs.kernelsu_branch }}
+      custom_ref: ${{ inputs.custom_ref || '' }}
       version: ${{ inputs.version || '' }}
       revision: ${{ inputs.revision || '' }}
       build_time: ${{ inputs.build_time || '' }}

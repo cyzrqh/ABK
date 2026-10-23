@@ -39,7 +39,7 @@ class KernelWorkflowRegressionTests(unittest.TestCase):
     def test_development_refs_are_reachable_successful_main_builds(self):
         expected = {
             "OFFICIAL_DEV_REF": "08a3b087e49227c8a6731c5f1114998b5e25255b",
-            "SUKISU_DEV_REF": "cf87e3f4ddd3f6e5464d85acf56aaa6950e70841",
+            "SUKISU_DEV_REF": "b50518a2946b7ca49e933356343526bb7dd81ff8",
             # Baka-SU/BakaSU ships no dev branch, so Dev collapses onto the same main HEAD as Stable.
             "BAKASU_DEV_REF": "9dbce02e511ea6b6305a238b84e456f6a92e1d0b",
         }
@@ -49,6 +49,24 @@ class KernelWorkflowRegressionTests(unittest.TestCase):
                     self.ref_script,
                     rf'(?m)^{variable}="{sha}"$',
                 )
+
+    def test_sukisu_pins_and_release_metadata_use_the_same_uapi6_source(self):
+        sha = "b50518a2946b7ca49e933356343526bb7dd81ff8"
+        self.assertIn(f'SUKISU_STABLE_REF="{sha}"', self.ref_script)
+        self.assertIn(f'SUKISU_STABLE_REF="{sha}"',
+                      (ROOT / ".github/workflows/main.yml").read_text(encoding="utf-8"))
+
+    def test_sukisu_checks_real_uapi_instead_of_changing_the_number(self):
+        block = self._step_run_block("添加 KernelSU")
+        case = block.split('"SukiSU")', 1)[1].split('"BakaSU")', 1)[0]
+        self.assertIn('read_sukisu_uapi.py" "$PWD/KernelSU"', case)
+        self.assertIn('if [ "$sukisu_uapi" != 6 ]', case)
+        self.assertNotIn('sed -i', case.split('requested_head=', 1)[1])
+
+    def test_612_kpm_compat_accepts_native_extension_and_legacy_layouts(self):
+        block = self._step_run_block("修复 SukiSU/BakaSU android16-6.12 源码兼容")
+        self.assertIn('ksu_dir / "extension/kpm/super_access.c"', block)
+        self.assertIn('ksu_dir / "kpm/super_access.c"', block)
 
     def test_resolved_sha_defaults_to_selected_variant_ref(self):
         self.assertIn(

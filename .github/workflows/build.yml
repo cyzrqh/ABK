@@ -1456,6 +1456,20 @@ jobs:
                 echo "::error::SukiSU setup 静默回退或检出错误: 请求 $requested_head，实际 $resolved_head"
                 exit 1
               fi
+              # Read the real shared header used by the implementation. Never
+              # change its version constant to hide an incompatible interface.
+              sukisu_uapi="$(python3 "$GITHUB_WORKSPACE/.github/scripts/read_sukisu_uapi.py" "$PWD/KernelSU")"
+              case "${EFFECTIVE_KSU_BRANCH:-${{ inputs.ksu_branch }}}" in
+                'Stable(标准)'|'Dev(开发)')
+                  if [ "$sukisu_uapi" != 6 ]; then
+                    echo "::error::Pinned SukiSU source is not UAPI 6 (actual: $sukisu_uapi); refusing an incompatible kernel"
+                    exit 1
+                  fi
+                  ;;
+              esac
+              echo "SukiSU actual source/UAPI: $resolved_head / $sukisu_uapi"
+              echo "SUKISU_SOURCE_SHA=$resolved_head" >> "$GITHUB_ENV"
+              echo "SUKISU_UAPI=$sukisu_uapi" >> "$GITHUB_ENV"
               ;;
             "BakaSU")
               echo "添加 BakaSU..."
@@ -6248,8 +6262,11 @@ jobs:
           changed = False
 
           netlink_h = Path("common/include/linux/netlink.h")
-          super_access_c = ksu_dir / "kpm/super_access.c"
-          if super_access_c.exists() and netlink_h.exists():
+          super_access_c = next((path for path in (
+              ksu_dir / "extension/kpm/super_access.c",
+              ksu_dir / "kpm/super_access.c",
+          ) if path.is_file()), None)
+          if super_access_c is not None and netlink_h.exists():
               netlink_text = netlink_h.read_text(errors="ignore")
               if "cb_mutex" not in netlink_text:
                   text = super_access_c.read_text()

@@ -468,7 +468,7 @@ jobs:
           # 与 .github/scripts/resolve-ksu-ref.sh 的 Stable 层保持一致：同一 commit 在
           # 两处独立维护，漂移会让 App 构建与发布链路编出不同的内核管理器。
           OFFICIAL_STABLE_REF="08a3b087e49227c8a6731c5f1114998b5e25255b"
-          SUKISU_STABLE_REF="cf87e3f4ddd3f6e5464d85acf56aaa6950e70841"
+          SUKISU_STABLE_REF="b50518a2946b7ca49e933356343526bb7dd81ff8"
           # Baka-SU/BakaSU 上游（2026-09 由 ReSukiSU/ReSukiSU 改名而来）没有 dev 分支，
           # 故 BAKASU_DEV_REF 直接继承 BAKASU_STABLE_REF，两者同为 main HEAD。
           BAKASU_STABLE_REF="9dbce02e511ea6b6305a238b84e456f6a92e1d0b"
