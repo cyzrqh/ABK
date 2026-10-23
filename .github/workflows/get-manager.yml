@@ -133,7 +133,7 @@ jobs:
           if [ "${{ inputs.kernelsu_variant }}" == "SukiSU" ]; then
             KSU_VERSION=$((40000 + KSU_GIT_VERSION - 2815))
             echo "SUKISU_SOURCE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
-            sukisu_uapi=$(awk '/^#define KERNEL_SU_UAPI_VERSION / {print $3; exit}' kernel/uapi/supercall.h)
+            sukisu_uapi=$(python3 "$GITHUB_WORKSPACE/.github/scripts/read_sukisu_uapi.py" .)
             if ! [[ "$sukisu_uapi" =~ ^[0-9]+$ ]]; then
               echo "::error::Cannot determine SukiSU kernel/manager UAPI from the selected source"
               exit 1

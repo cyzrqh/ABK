@@ -1,6 +1,7 @@
 """Keep pinned SukiSU kernels paired with their actual upstream manager build."""
 
 import json
+import importlib.util
 import os
 from pathlib import Path
 import shutil
@@ -39,6 +40,46 @@ elif url.startswith("https://nightly.link/"):
 else:
     raise SystemExit("Unexpected request: " + url)
 '''
+
+
+class SukisuUapiReaderTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="sukisu-uapi-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        spec = importlib.util.spec_from_file_location(
+            "read_sukisu_uapi", ROOT / ".github/scripts/read_sukisu_uapi.py")
+        self.reader = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.reader)
+
+    def header(self, text, path="uapi/supercall.h"):
+        header = self.root / path
+        header.parent.mkdir(parents=True, exist_ok=True)
+        header.write_text(text, encoding="utf-8")
+
+    def test_real_cf87_root_header_uses_const_not_macro(self):
+        self.header("static const __u32 KERNEL_SU_UAPI_VERSION = 4;\n")
+        self.assertEqual(4, self.reader.read_uapi(self.root))
+
+    def test_newer_interface_is_reported_honestly(self):
+        self.header("static const __u32 KERNEL_SU_UAPI_VERSION = 6;\n")
+        self.assertEqual(6, self.reader.read_uapi(self.root))
+
+    def test_macro_layout_is_supported(self):
+        self.header("#define KERNEL_SU_UAPI_VERSION 4\n", "kernel/uapi/supercall.h")
+        self.assertEqual(4, self.reader.read_uapi(self.root))
+
+    def test_missing_header_is_rejected(self):
+        with self.assertRaises(ValueError):
+            self.reader.read_uapi(self.root)
+
+    def test_unknown_and_ambiguous_versions_are_rejected(self):
+        for text in ("static const __u32 KERNEL_SU_UAPI_VERSION = OTHER;\n",
+                     "#define KERNEL_SU_UAPI_VERSION 4\n#define KERNEL_SU_UAPI_VERSION 6\n"):
+            with self.subTest(text=text):
+                self.header(text)
+                with self.assertRaises(ValueError):
+                    self.reader.read_uapi(self.root)
 
 
 class ManagerPairingContractTests(unittest.TestCase):
