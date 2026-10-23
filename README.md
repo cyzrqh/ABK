@@ -121,9 +121,15 @@ sukisu=
 
 在 GitHub Actions 与 App 的 GKI 构建界面中，**Latest(最新)** 位于 **Dev** 与 **Custom** 之间，由 [`resolve-ksu-ref.sh`](.github/scripts/resolve-ksu-ref.sh) 在运行时解析上游 KernelSU 来源：
 
-- **Official / SukiSU / BakaSU（GKI）：** 优先使用上游 `main` 的 **HEAD**，当该提交存在成功的 `release.yml`（标签发布）或独立的 `build-manager.yml` 时，内核与管理器共用该 `head_sha`；否则回退到 `main` 上最近一次成功的独立 `build-manager`。管理器经 [nightly.link](https://nightly.link/) 拉取（`manager.zip` 或 `Manager-release.zip`）；下载时同样会查找 `release.yml` 的 run。若 `main` 上两者皆无可用 CI，Latest 解析失败。
+- **Official / SukiSU / BakaSU（GKI）：** 优先使用上游 `main` 的 **HEAD**，当该提交存在成功的 `release.yml`（标签发布）或独立的 `build-manager.yml` 时，内核与管理器共用该 `head_sha`；否则选择 `main` 上最近一次成功的独立 `build-manager` 提交作为源码版本。管理器经 Actions API 或 [nightly.link](https://nightly.link/) 拉取（SukiSU 的 `Manager.zip` / 旧版 `manager.zip`，BakaSU 的 `Manager-release.zip`）；下载时同样会查找 `release.yml` 的 run。若 `main` 上两者皆无可用 CI，Latest 解析失败。
 
-若管理器下载失败，管理器 job 对应步骤会失败，但**内核构建仍会继续**。Latest 不会回退到 `releases/latest`（Stable/Dev 用的发布包路径）。
+若管理器下载失败，管理器 job 会给出错误，但**内核构建仍会继续**。SukiSU 下载器不会在缺少同源构建时偷偷改用另一个提交的 APK。Stable/Dev 使用固定源码提交，不代表最新官方管理器一定兼容。
+
+### SukiSU 管理器与内核接口必须匹配
+
+版本后缀（例如 `41050-4` 的 `-4`）是 UAPI 接口版本，不是普通补丁版本。把要求接口 `6` 的管理器用于接口 `4` 的内核，会提示“需要更新内核”，KPM 检测也可能因接口不兼容而失败；不能仅修改这个数字来修复。
+
+优先使用同次构建提供的 `SukiSU-Manager(...)` 产物。也可在 **Actions → GetManager → Run workflow** 单独获取管理器，不重编或刷写内核；选择与内核相同的分支，或使用 Custom 输入内核完整源码 SHA。下载器仅接受普通官方管理器，不混入随机包名或未重新打包的 Gradle 产物。
 
 ## Stock Config
 

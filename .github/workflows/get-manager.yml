@@ -4,6 +4,24 @@ permissions:
   actions: read   # Allows triggering actions
 
 on:
+  workflow_dispatch:
+    inputs:
+      kernelsu_variant:
+        description: 'Manager variant (does not rebuild or flash a kernel)'
+        required: true
+        type: choice
+        options: [SukiSU, Official, BakaSU]
+        default: SukiSU
+      ksu_branch:
+        description: 'Match the branch used to build your kernel'
+        required: true
+        type: choice
+        options: ['Stable(标准)', 'Dev(开发)', 'Latest(最新)', 'Custom(自定义)']
+        default: 'Stable(标准)'
+      custom_ref:
+        description: 'Exact kernel source SHA when using Custom'
+        required: false
+        type: string
   workflow_call: # This allows this workflow to be called from another workflow
     inputs:
       kernelsu_variant:
@@ -114,6 +132,13 @@ jobs:
 
           if [ "${{ inputs.kernelsu_variant }}" == "SukiSU" ]; then
             KSU_VERSION=$((40000 + KSU_GIT_VERSION - 2815))
+            echo "SUKISU_SOURCE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+            sukisu_uapi=$(awk '/^#define KERNEL_SU_UAPI_VERSION / {print $3; exit}' kernel/uapi/supercall.h)
+            if ! [[ "$sukisu_uapi" =~ ^[0-9]+$ ]]; then
+              echo "::error::Cannot determine SukiSU kernel/manager UAPI from the selected source"
+              exit 1
+            fi
+            echo "SUKISU_UAPI=$sukisu_uapi" >> "$GITHUB_ENV"
           elif [ "${{ inputs.kernelsu_variant }}" == "BakaSU" ]; then
             KSU_VERSION=$((30700 + KSU_GIT_VERSION))
           elif [ "${{ inputs.kernelsu_variant }}" == "Official" ]; then
@@ -225,6 +250,13 @@ jobs:
             echo "::error::未下载到任何 Manager APK"
             find manager-artifacts -maxdepth 3 -type f -print || true
             exit 1
+          fi
+
+          if [ "${{ inputs.kernelsu_variant }}" = "SukiSU" ]; then
+            printf 'Official SukiSU manager for source %s\nKernel and manager UAPI: %s\nUse with the matching kernel; the suffix is an interface version, not a cosmetic patch number.\n' \
+              "$SUKISU_SOURCE_SHA" "$SUKISU_UAPI" > manager-artifacts/SukiSU/PAIRING.txt
+            printf '### Matched SukiSU manager\n\nSource: `%s`\n\nKernel/manager UAPI: `%s`\n' \
+              "$SUKISU_SOURCE_SHA" "$SUKISU_UAPI" >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: 添加 SUSFS 模块

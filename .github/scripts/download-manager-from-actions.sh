@@ -12,21 +12,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/resolve-ksu-ref.sh"
 
 # Artifact zip names on nightly.link match actions/upload-artifact names + ".zip".
-nightly_artifact_zip() {
+manager_artifact_names() {
   case "$REPO" in
-    Baka-SU/BakaSU) printf '%s\n' "Manager-release.zip" ;;
-    tiann/KernelSU | SukiSU-Ultra/SukiSU-Ultra) printf '%s\n' "manager.zip" ;;
+    Baka-SU/BakaSU) printf '%s\n' "Manager-release" ;;
+    SukiSU-Ultra/SukiSU-Ultra) printf '%s\n' "Manager" "manager" ;;
+    tiann/KernelSU) printf '%s\n' "manager" ;;
     *)
       echo "::error::Unknown repo for nightly.link manager download: ${REPO}" >&2
       exit 1
       ;;
-  esac
-}
-
-manager_artifact_name() {
-  case "$REPO" in
-    Baka-SU/BakaSU) printf '%s\n' "Manager-release" ;;
-    *) printf '%s\n' "manager" ;;
   esac
 }
 
@@ -43,18 +37,21 @@ extract_apk_from_zip() {
 
 try_download_artifact_api() {
   local run_id="$1"
-  local artifact_name tmp_zip artifact_id artifacts_json
+  local artifact_names tmp_zip artifact_id artifacts_json
 
   if [ -z "${GITHUB_TOKEN:-}" ]; then
     return 1
   fi
 
-  artifact_name="$(manager_artifact_name)"
+  artifact_names="$(manager_artifact_names | jq -R . | jq -s .)"
   KSU_API_REPO="$REPO"
   artifacts_json="$(ksu_github_api_curl \
     "https://api.github.com/repos/${REPO}/actions/runs/${run_id}/artifacts")"
-  artifact_id="$(printf '%s' "$artifacts_json" | jq -r --arg name "$artifact_name" '
-    (.artifacts[] | select(.name == $name) | .id) // empty')"
+  artifact_id="$(printf '%s' "$artifacts_json" | jq -r --argjson names "$artifact_names" '
+    [.artifacts[] | select(.expired != true) as $artifact |
+      ($names | index($artifact.name)) as $priority |
+      select($priority != null) | {id: $artifact.id, priority: $priority}]
+    | sort_by(.priority) | .[0].id // empty')"
   if [ -z "$artifact_id" ] || [ "$artifact_id" = "null" ]; then
     echo "::warning::No manager artifact on run ${run_id} for ${REPO}" >&2
     return 1
@@ -74,19 +71,23 @@ try_download_artifact_api() {
 
 try_download_nightly_run() {
   local run_id="$1"
-  local zip_name url tmp_zip
-  zip_name="$(nightly_artifact_zip)"
-  url="https://nightly.link/${REPO}/actions/runs/${run_id}/${zip_name}"
-  mkdir -p "$VARIANT_DIR"
-  tmp_zip="$(mktemp "${TMPDIR:-/tmp}/manager-XXXXXX.zip")"
+  local artifact_name zip_name url tmp_zip
+  while IFS= read -r artifact_name; do
+    zip_name="${artifact_name}.zip"
+    url="https://nightly.link/${REPO}/actions/runs/${run_id}/${zip_name}"
+    mkdir -p "$VARIANT_DIR"
+    tmp_zip="$(mktemp "${TMPDIR:-/tmp}/manager-XXXXXX.zip")"
 
-  echo "Downloading manager via nightly.link (run ${run_id}, sha ${KSU_SHA}, source ${MANAGER_RUN_SOURCE}): ${url}"
-  if ! curl -fsSL -o "$tmp_zip" "$url"; then
-    rm -f "$tmp_zip"
-    return 1
-  fi
-  extract_apk_from_zip "$tmp_zip"
-  echo "Downloaded manager from ${REPO}@${KSU_SHA} (run ${run_id}, source ${MANAGER_RUN_SOURCE}) via nightly.link"
+    echo "Downloading manager via nightly.link (run ${run_id}, sha ${KSU_SHA}, source ${MANAGER_RUN_SOURCE}): ${url}"
+    if ! curl -fsSL -o "$tmp_zip" "$url"; then
+      rm -f "$tmp_zip"
+      continue
+    fi
+    extract_apk_from_zip "$tmp_zip" || return 1
+    echo "Downloaded manager from ${REPO}@${KSU_SHA} (run ${run_id}, source ${MANAGER_RUN_SOURCE}) via nightly.link"
+    return 0
+  done < <(manager_artifact_names)
+  return 1
 }
 
 if ! ksu_find_manager_run_id "$REPO" "$KSU_SHA"; then

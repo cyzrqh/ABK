@@ -164,6 +164,14 @@ ksu_find_manager_run_id() {
     return 0
   fi
 
+  # SukiSU's suffix is its UAPI, not a cosmetic version. A newer manager/ksud
+  # can remove the old KPM ioctls even when the kernel's numeric version is higher.
+  # Do not silently pair a pinned kernel with an unrelated main-branch manager.
+  if [ "$repo" = "SukiSU-Ultra/SukiSU-Ultra" ]; then
+    echo "::error::No successful SukiSU manager build for exact kernel commit ${sha}; refusing a different-commit manager (UAPI/KPM may be incompatible)" >&2
+    return 1
+  fi
+
   echo "::notice::No successful build-manager or Release run for ${repo} at head_sha=${sha}; falling back to latest successful build-manager on main" >&2
   if run_id="$(ksu_workflow_run_id_for_branch "$repo" "$KSU_BUILD_MANAGER_WORKFLOW" "main")"; then
     MANAGER_RUN_SOURCE="fallback-main"
