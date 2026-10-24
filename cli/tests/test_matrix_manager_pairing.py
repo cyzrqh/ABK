@@ -1,4 +1,4 @@
-"""Keep full-matrix kernels paired with the manager for their selected source."""
+"""Select the manager after the kernels establish their actual compiled versions."""
 
 from pathlib import Path
 import re
@@ -53,7 +53,9 @@ class MatrixManagerPairingTests(unittest.TestCase):
         manager = self.job_block("get-ksu-manager")
         self.assertIn("    uses: ./.github/workflows/get-manager.yml", manager)
         self.assertIn("    secrets: inherit", manager)
-        self.assertIn("    if: inputs.kernelsu_variant != 'None'", manager)
+        self.assertIn("!cancelled() && inputs.kernelsu_variant != 'None'", manager)
+        self.assertIn("    needs: build-full-feature-matrix", manager)
+        self.assertIn("      follow_kernel: true", manager)
         self.assertNotIn("    strategy:", manager)
 
     def test_manager_and_kernel_receive_same_source_selection(self):
@@ -75,6 +77,29 @@ class MatrixManagerPairingTests(unittest.TestCase):
             release,
         )
         self.assertNotIn("      - get-ksu-manager\n", release)
+
+    def test_all_gki_entrypoints_wait_for_their_kernel_jobs(self):
+        parents = {
+            "kernel-custom.yml": "build-custom-kernel",
+            "kernel-a12-5-10.yml": "build-kernels-a12-5-10",
+            "kernel-a13-5-15.yml": "build-kernels-a13-5-15",
+            "kernel-a14-6-1.yml": "build-kernels-a14-6-1",
+            "kernel-a15-6-6.yml": "build-kernels-a15-6-6",
+            "kernel-a16-6-12.yml": "build-kernels-a16-6-12",
+        }
+        for filename, build_job in parents.items():
+            with self.subTest(filename=filename):
+                text = (ROOT / ".github/workflows" / filename).read_text(encoding="utf-8")
+                manager = text.split("  get-ksu-manager:\n", 1)[1]
+                self.assertIn(f"    needs: {build_job}\n", manager)
+                self.assertIn("      follow_kernel: true", manager)
+
+    def test_manager_matching_cannot_fall_back_to_the_pinned_old_apk(self):
+        text = (ROOT / ".github/workflows/get-manager.yml").read_text(encoding="utf-8")
+        self.assertIn("pattern: SukiSU-Metadata-*", text)
+        self.assertIn("--metadata-dir kernel-metadata", text)
+        old_download = text.split("      - name: 添加 KernelSU\n", 1)[1]
+        self.assertIn("if: inputs.kernelsu_variant != 'SukiSU' || !inputs.follow_kernel", old_download)
 
 
 if __name__ == "__main__":

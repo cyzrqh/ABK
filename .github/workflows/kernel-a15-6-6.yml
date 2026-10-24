@@ -266,10 +266,12 @@ jobs:
 
   # 仅在直接触发时运行，从 main.yml 调用时跳过
   get-ksu-manager:
-    if: ${{ !inputs.called_from_main }}
+    needs: build-kernels-a15-6-6
+    if: ${{ !cancelled() && !inputs.called_from_main }}
     uses: ./.github/workflows/get-manager.yml
     secrets: inherit
     with:
       kernelsu_variant: ${{ inputs.kernelsu_variant }}
       ksu_branch: ${{ inputs.kernelsu_branch }}
+      follow_kernel: true
       custom_ref: ${{ inputs.custom_ref || '' }}

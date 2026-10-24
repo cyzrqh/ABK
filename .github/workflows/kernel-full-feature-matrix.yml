@@ -373,13 +373,15 @@ jobs:
           PY
 
   get-ksu-manager:
-    if: inputs.kernelsu_variant != 'None'
+    needs: build-full-feature-matrix
+    if: ${{ !cancelled() && inputs.kernelsu_variant != 'None' }}
     uses: ./.github/workflows/get-manager.yml
     secrets: inherit
     with:
       kernelsu_variant: ${{ inputs.kernelsu_variant }}
       ksu_branch: ${{ inputs.kernelsu_branch }}
       custom_ref: ${{ inputs.custom_ref || '' }}
+      follow_kernel: true
 
   build-full-feature-matrix:
     name: "${{ matrix.kernel_version }}.${{ matrix.sub_level }}-${{ matrix.android_version }}-${{ matrix.os_patch_level }}"

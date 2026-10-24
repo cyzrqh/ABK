@@ -6938,3 +6938,22 @@ jobs:
           path: patch-rejects/
           if-no-files-found: ignore
           compression-level: 9
+
+      - name: 记录内核实际编译的 SukiSU 管理器要求
+        if: success() && inputs.ksu_variant == 'SukiSU'
+        env:
+          KERNEL_LABEL: ${{ inputs.android_version }}-${{ inputs.kernel_version }}.${{ inputs.sub_level }}-${{ inputs.os_patch_level }}
+        run: |
+          python3 "$GITHUB_WORKSPACE/.github/scripts/write_sukisu_build_metadata.py" \
+            --source "$KERNEL_ROOT/KernelSU" \
+            --build-root "$KERNEL_ROOT" \
+            --kernel-label "$KERNEL_LABEL" \
+            --output "$GITHUB_WORKSPACE/sukisu-build-metadata/$KERNEL_LABEL.json"
+
+      - name: 上传内核实际 SukiSU 版本记录
+        if: success() && inputs.ksu_variant == 'SukiSU'
+        uses: actions/upload-artifact@v6
+        with:
+          name: SukiSU-Metadata-${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.sub_level }}
+          path: sukisu-build-metadata/*.json
+          if-no-files-found: error

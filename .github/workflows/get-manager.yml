@@ -22,6 +22,15 @@ on:
         description: 'Exact kernel source SHA when using Custom'
         required: false
         type: string
+      follow_kernel:
+        description: 'Match the version actually compiled into the kernel'
+        required: true
+        type: boolean
+        default: true
+      kernel_run_id:
+        description: 'Kernel Actions run ID containing SukiSU build metadata'
+        required: false
+        type: string
   workflow_call: # This allows this workflow to be called from another workflow
     inputs:
       kernelsu_variant:
@@ -32,6 +41,13 @@ on:
         type: string
         default: Stable(标准)
       custom_ref:
+        required: false
+        type: string
+      follow_kernel:
+        required: false
+        type: boolean
+        default: false
+      kernel_run_id:
         required: false
         type: string
     outputs:
@@ -49,7 +65,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       # 输出1: KSU版本号
-      ksuVer: ${{ steps.get_version.outputs.kversion }}
+      ksuVer: ${{ steps.match_sukisu.outputs.kversion || steps.get_version.outputs.kversion }}
       # 输出2: SUSFS版本号
       susVer: ${{ steps.get_version.outputs.sversion }}
     env:
@@ -85,7 +101,7 @@ jobs:
       - name: 安装依赖
         run: |
           sudo apt-get update
-          sudo apt-get install -y git curl jq unzip
+          sudo apt-get install -y git curl jq unzip aapt apksigner
 
       - uses: actions/checkout@v6
         with:
@@ -144,6 +160,11 @@ jobs:
           elif [ "${{ inputs.kernelsu_variant }}" == "Official" ]; then
             KSU_VERSION=$((30000 + KSU_GIT_VERSION))
           fi
+          if [ "${{ inputs.kernelsu_variant }}" = SukiSU ] && [ "${{ inputs.follow_kernel }}" = true ]; then
+            # The source count is not necessarily the version compiled by Kbuild.
+            # The matching step below supplies the actual kernel-derived value.
+            KSU_VERSION=""
+          fi
           echo $KSU_VERSION
           echo "KSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
 
@@ -156,7 +177,29 @@ jobs:
           echo "kversion=$KSU_VERSION" >> $GITHUB_OUTPUT
           echo "sversion=$SUS_VERSION" >> $GITHUB_OUTPUT
 
+      - name: 下载内核实际版本记录
+        if: inputs.kernelsu_variant == 'SukiSU' && inputs.follow_kernel
+        uses: actions/download-artifact@v6
+        with:
+          pattern: SukiSU-Metadata-*
+          path: kernel-metadata
+          merge-multiple: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ inputs.kernel_run_id || github.run_id }}
+
+      - name: 获取跟随内核版本的官方 SukiSU 管理器
+        if: inputs.kernelsu_variant == 'SukiSU' && inputs.follow_kernel
+        id: match_sukisu
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 .github/scripts/match_sukisu_manager.py \
+            --source-dir KernelSU --metadata-dir kernel-metadata \
+            --output-dir manager-artifacts/SukiSU
+
       - name: 添加 KernelSU
+        if: inputs.kernelsu_variant != 'SukiSU' || !inputs.follow_kernel
         id: add_KSU
         continue-on-error: true
         run: |
@@ -304,12 +347,13 @@ jobs:
         run: echo "下载CI构建的KSU失败!"
 
       - name: 上传APK
-        if: steps.add_KSU.outcome == 'success'
+        if: steps.add_KSU.outcome == 'success' || steps.match_sukisu.outcome == 'success'
         uses: actions/upload-artifact@v6
         with:
-          name: ${{ inputs.kernelsu_variant }}-Manager(${{ env.KSU_VERSION }})
+          name: ${{ inputs.kernelsu_variant }}-Manager(${{ env.SUKISU_MANAGER_VERSIONS || env.KSU_VERSION }})
           path: |
-            **/*.apk
+            manager-artifacts/${{ inputs.kernelsu_variant }}/**/*.apk
+            manager-artifacts/${{ inputs.kernelsu_variant }}/**/PAIRING.txt
 
       - name: 上传SUSFS模块
         if: steps.add_SUSFS.outcome == 'success'

@@ -207,9 +207,11 @@ jobs:
       custom_kernel_options: ${{ inputs.custom_kernel_options || '' }}
 
   get-ksu-manager:
+    needs: build-custom-kernel
     uses: ./.github/workflows/get-manager.yml
     secrets: inherit
     with:
       kernelsu_variant: ${{ inputs.kernelsu_variant }}
       ksu_branch: ${{ inputs.kernelsu_branch }}
       custom_ref: ${{ inputs.custom_ref || '' }}
+      follow_kernel: true

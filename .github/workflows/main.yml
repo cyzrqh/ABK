@@ -165,11 +165,14 @@ jobs:
   # ==================== 获取管理器 ====================
   # 下载最新的 KernelSU 管理器 APK 和 SUSFS 模块
   get-manager:
+    needs: [build-a12-5-10, build-a13-5-15, build-a14-6-1, build-a15-6-6, build-a16-6-12]
+    if: ${{ !cancelled() && inputs.kernelsu_variant != 'None' }}
     uses: ./.github/workflows/get-manager.yml
     secrets: inherit
     with:
       kernelsu_variant: ${{ inputs.kernelsu_variant }}
-      kernelsu_branch: ${{ inputs.kernelsu_branch }}
+      ksu_branch: ${{ inputs.kernelsu_branch }}
+      follow_kernel: true
 
   # ==================== Android 12 - 5.10 构建 ====================
   build-a12-5-10:

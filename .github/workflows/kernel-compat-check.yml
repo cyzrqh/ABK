@@ -5,14 +5,19 @@ on:
   push:
     paths:
       - '.github/workflows/build.yml'
+      - '.github/workflows/get-manager.yml'
       - '.github/workflows/kernel-full-feature-matrix.yml'
       - '.github/workflows/kernel-compat-check.yml'
       - '.github/scripts/fix_sukisu_susfs.py'
       - '.github/scripts/validate_kpm_image.py'
       - '.github/scripts/resolve-ksu-ref.sh'
       - '.github/scripts/read_sukisu_uapi.py'
+      - '.github/scripts/write_sukisu_build_metadata.py'
+      - '.github/scripts/match_sukisu_manager.py'
       - '.github/scripts/download-manager-from-actions.sh'
       - 'cli/tests/test_manager_pairing.py'
+      - 'cli/tests/test_sukisu_build_metadata.py'
+      - 'cli/tests/test_sukisu_manager_match.py'
       - 'cli/tests/test_matrix_manager_pairing.py'
       - 'cli/tests/test_kpm_image_integrity.py'
       - 'cli/tests/test_sukisu_susfs_hook_compat.py'
@@ -20,14 +25,19 @@ on:
   pull_request:
     paths:
       - '.github/workflows/build.yml'
+      - '.github/workflows/get-manager.yml'
       - '.github/workflows/kernel-full-feature-matrix.yml'
       - '.github/workflows/kernel-compat-check.yml'
       - '.github/scripts/fix_sukisu_susfs.py'
       - '.github/scripts/validate_kpm_image.py'
       - '.github/scripts/resolve-ksu-ref.sh'
       - '.github/scripts/read_sukisu_uapi.py'
+      - '.github/scripts/write_sukisu_build_metadata.py'
+      - '.github/scripts/match_sukisu_manager.py'
       - '.github/scripts/download-manager-from-actions.sh'
       - 'cli/tests/test_manager_pairing.py'
+      - 'cli/tests/test_sukisu_build_metadata.py'
+      - 'cli/tests/test_sukisu_manager_match.py'
       - 'cli/tests/test_matrix_manager_pairing.py'
       - 'cli/tests/test_kpm_image_integrity.py'
       - 'cli/tests/test_sukisu_susfs_hook_compat.py'
@@ -52,6 +62,8 @@ jobs:
           python3 -m unittest discover -s cli/tests -p 'test_sukisu_execve_session.py' -v
           python3 -m unittest discover -s cli/tests -p 'test_kernel_workflow_regressions.py' -v
           python3 -m unittest discover -s cli/tests -p 'test_manager_pairing.py' -v
+          python3 -m unittest discover -s cli/tests -p 'test_sukisu_build_metadata.py' -v
+          python3 -m unittest discover -s cli/tests -p 'test_sukisu_manager_match.py' -v
           python3 -m unittest discover -s cli/tests -p 'test_matrix_manager_pairing.py' -v
       - name: Read the actual pinned SukiSU source
         id: sukisu-source
@@ -72,6 +84,7 @@ jobs:
           repository: SukiSU-Ultra/SukiSU-Ultra
           ref: ${{ steps.sukisu-source.outputs.ref }}
           path: .sukisu-source-check
+          fetch-depth: 0
       - name: Check real UAPI 6 source compatibility and idempotence
         run: |
           set -euo pipefail
@@ -84,3 +97,32 @@ jobs:
           cmp "$RUNNER_TEMP/sukisu-first.diff" "$RUNNER_TEMP/sukisu-second.diff"
           # Compatibility work must not fake UAPI 6 or rewrite the native KPM ABI.
           git -C "$source_dir" diff --exit-code -- uapi kernel/extension
+      - name: Verify a real official manager follows the recorded kernel version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y aapt apksigner
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          # Reference requirements observed in the user's successful kernel run.
+          # This integration fixture is not a new kernel compilation.
+          directory = Path('reference-kernel-metadata')
+          directory.mkdir()
+          (directory / 'reference-41068.json').write_text(json.dumps({
+              'schema_version': 1,
+              'kernel_label': 'reference-run-40085496981-5.10.236',
+              'kernel_source_sha': 'b50518a2946b7ca49e933356343526bb7dd81ff8',
+              'version_code': 41068,
+              'uapi': 6,
+              'expected_certificate_sha256': '947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef',
+              'expected_certificate_size': 0x35c,
+              'manager_package_name': 'com.sukisu.ultra',
+          }))
+          PY
+          python3 .github/scripts/match_sukisu_manager.py \
+            --source-dir .sukisu-source-check --metadata-dir reference-kernel-metadata \
+            --output-dir verified-reference-manager
