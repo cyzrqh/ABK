@@ -83,6 +83,12 @@ class SukisuUapiReaderTests(unittest.TestCase):
 
 
 class ManagerPairingContractTests(unittest.TestCase):
+    def test_pairing_note_is_included_with_the_apk_artifact(self):
+        workflow = (ROOT / ".github/workflows/get-manager.yml").read_text(encoding="utf-8")
+        upload = workflow.split("- name: 上传APK", 1)[1].split("- name:", 1)[0]
+        self.assertIn("manager-artifacts/${{ inputs.kernelsu_variant }}/*.apk", upload)
+        self.assertIn("manager-artifacts/${{ inputs.kernelsu_variant }}/PAIRING.txt", upload)
+
     def test_sukisu_missing_exact_manager_cannot_fall_back_to_main(self):
         script = RESOLVER.read_text(encoding="utf-8")
         function = script.split("ksu_find_manager_run_id() {", 1)[1].split(

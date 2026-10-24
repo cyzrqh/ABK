@@ -11,8 +11,10 @@ on:
       - '.github/scripts/validate_kpm_image.py'
       - '.github/scripts/resolve-ksu-ref.sh'
       - '.github/scripts/read_sukisu_uapi.py'
+      - '.github/scripts/pin_sukisu_version.py'
       - '.github/scripts/download-manager-from-actions.sh'
       - 'cli/tests/test_manager_pairing.py'
+      - 'cli/tests/test_sukisu_version_metadata.py'
       - 'cli/tests/test_matrix_manager_pairing.py'
       - 'cli/tests/test_kpm_image_integrity.py'
       - 'cli/tests/test_sukisu_susfs_hook_compat.py'
@@ -26,8 +28,10 @@ on:
       - '.github/scripts/validate_kpm_image.py'
       - '.github/scripts/resolve-ksu-ref.sh'
       - '.github/scripts/read_sukisu_uapi.py'
+      - '.github/scripts/pin_sukisu_version.py'
       - '.github/scripts/download-manager-from-actions.sh'
       - 'cli/tests/test_manager_pairing.py'
+      - 'cli/tests/test_sukisu_version_metadata.py'
       - 'cli/tests/test_matrix_manager_pairing.py'
       - 'cli/tests/test_kpm_image_integrity.py'
       - 'cli/tests/test_sukisu_susfs_hook_compat.py'
@@ -52,6 +56,7 @@ jobs:
           python3 -m unittest discover -s cli/tests -p 'test_sukisu_execve_session.py' -v
           python3 -m unittest discover -s cli/tests -p 'test_kernel_workflow_regressions.py' -v
           python3 -m unittest discover -s cli/tests -p 'test_manager_pairing.py' -v
+          python3 -m unittest discover -s cli/tests -p 'test_sukisu_version_metadata.py' -v
           python3 -m unittest discover -s cli/tests -p 'test_matrix_manager_pairing.py' -v
       - name: Read the actual pinned SukiSU source
         id: sukisu-source
@@ -72,14 +77,17 @@ jobs:
           repository: SukiSU-Ultra/SukiSU-Ultra
           ref: ${{ steps.sukisu-source.outputs.ref }}
           path: .sukisu-source-check
+          fetch-depth: 0
       - name: Check real UAPI 6 source compatibility and idempotence
         run: |
           set -euo pipefail
           source_dir="$GITHUB_WORKSPACE/.sukisu-source-check"
           test "$(python3 .github/scripts/read_sukisu_uapi.py "$source_dir")" = 6
+          python3 .github/scripts/pin_sukisu_version.py "$source_dir"
           python3 .github/scripts/fix_sukisu_susfs.py "$source_dir"
           git -C "$source_dir" diff --no-ext-diff > "$RUNNER_TEMP/sukisu-first.diff"
           python3 .github/scripts/fix_sukisu_susfs.py "$source_dir"
+          python3 .github/scripts/pin_sukisu_version.py "$source_dir"
           git -C "$source_dir" diff --no-ext-diff > "$RUNNER_TEMP/sukisu-second.diff"
           cmp "$RUNNER_TEMP/sukisu-first.diff" "$RUNNER_TEMP/sukisu-second.diff"
           # Compatibility work must not fake UAPI 6 or rewrite the native KPM ABI.
