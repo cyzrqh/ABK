@@ -309,8 +309,7 @@ jobs:
         with:
           name: ${{ inputs.kernelsu_variant }}-Manager(${{ env.KSU_VERSION }})
           path: |
-            manager-artifacts/${{ inputs.kernelsu_variant }}/*.apk
-            manager-artifacts/${{ inputs.kernelsu_variant }}/PAIRING.txt
+            **/*.apk
 
       - name: 上传SUSFS模块
         if: steps.add_SUSFS.outcome == 'success'

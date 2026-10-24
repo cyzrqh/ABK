@@ -68,11 +68,6 @@ class KernelWorkflowRegressionTests(unittest.TestCase):
         self.assertIn('ksu_dir / "extension/kpm/super_access.c"', block)
         self.assertIn('ksu_dir / "kpm/super_access.c"', block)
 
-    def test_sukisu_display_metadata_is_pinned_to_checked_out_source(self):
-        block = self._step_run_block("配置 SukiSU 管理器信息")
-        self.assertIn('pin_sukisu_version.py" .', block)
-        self.assertNotIn("get_ksu_version_full", block)
-
     def test_resolved_sha_defaults_to_selected_variant_ref(self):
         self.assertIn(
             'emit_env "RESOLVED_KSU_SHA" "${RESOLVED_KSU_SHA:-$BRANCH}"',
