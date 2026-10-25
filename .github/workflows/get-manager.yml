@@ -117,15 +117,14 @@ jobs:
           restore-keys: |
             sukisu-metadata-v1-${{ github.repository_id }}-${{ inputs.kernel_run_id || github.run_id }}-
 
-      - name: 下载本次内部版本记录
+      - name: 从构建日志读取实际版本记录
         if: inputs.kernelsu_variant == 'SukiSU' && inputs.follow_kernel
-        uses: actions/download-artifact@v6
-        with:
-          pattern: SukiSU-Metadata-*
-          path: kernel-metadata
-          merge-multiple: true
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          run-id: ${{ inputs.kernel_run_id || github.run_id }}
+        env:
+          SOURCE_RUN_ID: ${{ inputs.kernel_run_id || github.run_id }}
+        run: |
+          python3 .github/scripts/read_sukisu_run_metadata.py \
+            --repository "$GITHUB_REPOSITORY" --run-id "$SOURCE_RUN_ID" \
+            --output-dir kernel-metadata
 
       - name: 检查内部版本记录
         if: inputs.kernelsu_variant == 'SukiSU' && inputs.follow_kernel

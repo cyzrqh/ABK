@@ -119,7 +119,7 @@ def main():
         parser.exit(1, f"Cannot determine the compiled SukiSU manager requirements: {error}\n")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps(metadata, ensure_ascii=False))
+    print("ABK_SUKISU_METADATA_JSON:" + json.dumps(metadata, ensure_ascii=False))
 
 
 if __name__ == "__main__":

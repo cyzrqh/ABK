@@ -96,7 +96,7 @@ class MatrixManagerPairingTests(unittest.TestCase):
 
     def test_manager_matching_cannot_fall_back_to_the_pinned_old_apk(self):
         text = (ROOT / ".github/workflows/get-manager.yml").read_text(encoding="utf-8")
-        self.assertIn("pattern: SukiSU-Metadata-*", text)
+        self.assertIn("read_sukisu_run_metadata.py", text)
         self.assertIn("--metadata-dir kernel-metadata", text)
         old_download = text.split("      - name: 添加 KernelSU\n", 1)[1]
         self.assertIn("if: inputs.kernelsu_variant != 'SukiSU' || !inputs.follow_kernel", old_download)
@@ -104,7 +104,7 @@ class MatrixManagerPairingTests(unittest.TestCase):
     def test_internal_records_are_cached_before_cleanup_and_survive_retry(self):
         text = (ROOT / ".github/workflows/get-manager.yml").read_text(encoding="utf-8")
         restore = text.index("uses: actions/cache/restore@v5")
-        download = text.index("pattern: SukiSU-Metadata-*")
+        download = text.index("read_sukisu_run_metadata.py")
         save = text.index("id: preserve-metadata")
         match = text.index("id: match_sukisu")
         cleanup = text.index("cleanup_sukisu_metadata.py")
@@ -118,6 +118,11 @@ class MatrixManagerPairingTests(unittest.TestCase):
         self.assertIn("fail-on-cache-miss: true", text)
         self.assertIn('actions: write', text)
         self.assertIn('--run-id "$SOURCE_RUN_ID" --apply', text)
+
+    def test_kernel_records_no_longer_create_download_entries(self):
+        text = (ROOT / ".github/workflows/build.yml").read_text(encoding="utf-8")
+        self.assertIn("write_sukisu_build_metadata.py", text)
+        self.assertNotIn("name: SukiSU-Metadata-", text)
 
 
 if __name__ == "__main__":
