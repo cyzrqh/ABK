@@ -68,8 +68,8 @@ def official_runs(api_get, max_runs=200):
             # GitHub's page offset depends on per_page. Keep it constant even
             # when only a few of the last page's records will be inspected.
             parameters = {"status": "success", "per_page": 100, "page": page}
-            if workflow == "build-manager.yml":
-                parameters["branch"] = "main"
+            # Both main and dev publish officially signed managers. Query them
+            # together, then exclude pull requests and unrelated branches below.
             # Official release.yml also runs on version tags. Their head_branch
             # is e.g. v4.2.1-r2, not main; excluding them would miss signed APKs
             # such as 41068. Candidate commits are checked against origin/main.
@@ -94,7 +94,7 @@ def official_runs(api_get, max_runs=200):
     for record in sorted(records, key=lambda item: item.get("created_at", ""), reverse=True):
         source = record.get("head_sha", "")
         branch = record.get("head_branch", "")
-        branch_allowed = (branch == "main" or
+        branch_allowed = (branch in {"main", "dev"} or
                           (record["_workflow_file"] == "release.yml"
                            and isinstance(branch, str) and RELEASE_TAG.fullmatch(branch)))
         if (record.get("status") != "completed" or record.get("conclusion") != "success"
@@ -160,7 +160,15 @@ def candidate_metadata(source_dir, source_sha, run, require_main_ancestor=False)
     except subprocess.CalledProcessError:
         run(git + ["fetch", "origin", source_sha])
     if require_main_ancestor:
-        run(git + ["merge-base", "--is-ancestor", source_sha, "refs/remotes/origin/main"])
+        for branch in ("main", "dev"):
+            try:
+                run(git + ["merge-base", "--is-ancestor", source_sha,
+                           "refs/remotes/origin/" + branch])
+                break
+            except subprocess.CalledProcessError:
+                continue
+        else:
+            raise ValueError("Release source is outside official main/dev history")
     count = int(run(git + ["rev-list", "--count", source_sha]))
     for relative in ("uapi/supercall.h", "kernel/include/uapi/supercall.h", "kernel/uapi/supercall.h"):
         try:
@@ -268,61 +276,90 @@ def match_managers(source_dir, metadata_dir, output_dir, *, api_get=github_api,
     candidates = official_runs(api_get, max_runs)
     matched = {}
     failures = []
+    source_failures = 0
+    ranked = []
+    # The official workflow and Gradle do not always use the same commit count.
+    # A published APK is immutable, whereas a later local history count can
+    # differ. Use history only to try likely candidates first; the actual APK
+    # manifest is the authority for every final version match.
+    for index, candidate in enumerate(candidates):
+        try:
+            estimate, uapi = candidate_metadata(
+                source_dir, candidate["head_sha"].lower(), run,
+                require_main_ancestor=(candidate["_workflow_file"] == "release.yml"
+                                       and candidate["head_branch"] not in {"main", "dev"}))
+            wanted = [version for version, interface in groups if interface == uapi]
+            if wanted:
+                ranked.append((min(abs(estimate - version) for version in wanted),
+                               index, uapi, candidate))
+        except (OSError, ValueError, subprocess.SubprocessError):
+            source_failures += 1
     with tempfile.TemporaryDirectory(prefix=".sukisu-manager-match-", dir=output_dir.parent) as temporary:
         temporary = Path(temporary)
         staged = temporary / "verified"
         staged.mkdir()
-        for candidate in candidates:
+        for _distance, _index, uapi, candidate in sorted(ranked, key=lambda item: item[:2]):
             source_sha = candidate["head_sha"].lower()
             try:
-                key = candidate_metadata(
-                    source_dir, source_sha, run,
-                    require_main_ancestor=(candidate["_workflow_file"] == "release.yml"
-                                           and candidate["head_branch"] != "main"))
-                if key not in groups or key in matched:
+                if not any(key[1] == uapi and key not in matched for key in groups):
                     continue
-                version, uapi = key
                 download_dir = temporary / ("download-" + source_sha)
                 download_dir.mkdir()
                 downloader(source_sha, download_dir)
                 apks = sorted(download_dir.rglob("*.apk"))
                 if not apks:
                     raise ValueError("Official manager artifact has no APK")
-                expected_certificate = groups[key][0]["expected_certificate_sha256"]
-                expected_certificate_size = groups[key][0]["expected_certificate_size"]
-                expected_package = groups[key][0]["manager_package_name"]
+                verified = {}
                 for apk in apks:
                     if apk.is_symlink() or not apk.is_file():
                         raise ValueError("Official artifact contains an invalid APK path")
                     identity = inspector(apk)
+                    version = identity["version_code"]
+                    key = (version, uapi)
+                    if key not in groups or key in matched:
+                        failures.append(f"{source_sha}: APK version/interface {version}-{uapi} "
+                                        "does not match the pending compiled kernels")
+                        continue
+                    expected_certificate = groups[key][0]["expected_certificate_sha256"]
+                    expected_certificate_size = groups[key][0]["expected_certificate_size"]
+                    expected_package = groups[key][0]["manager_package_name"]
                     if identity["package_name"] != expected_package:
                         raise ValueError("APK package does not match the package expected by the kernel")
-                    if identity["version_code"] != version:
-                        raise ValueError("Real APK versionCode does not match the compiled kernel")
                     if identity["certificate_sha256"].lower() != expected_certificate:
                         raise ValueError("APK signer does not match the certificate expected by the kernel")
                     if identity["certificate_size"] != expected_certificate_size:
                         raise ValueError("APK certificate DER size does not match the size expected by the kernel")
-                destination = staged / f"{version}-{uapi}"
-                destination.mkdir()
-                copied = []
-                for apk in apks:
-                    target = destination / apk.relative_to(download_dir)
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(apk, target)
-                    copied.append(target)
-                write_pairing(destination, version, uapi, groups[key], candidate, copied)
-                matched[key] = {"version_code": version, "uapi": uapi,
-                                "manager_source_sha": source_sha,
-                                "kernels": [record["kernel_label"] for record in groups[key]]}
+                    verified.setdefault(key, []).append(apk)
+                for key, verified_apks in verified.items():
+                    version, _interface = key
+                    destination = staged / f"{version}-{uapi}"
+                    destination.mkdir()
+                    copied = []
+                    for apk in verified_apks:
+                        target = destination / apk.relative_to(download_dir)
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(apk, target)
+                        copied.append(target)
+                    write_pairing(destination, version, uapi, groups[key], candidate, copied)
+                    matched[key] = {"version_code": version, "uapi": uapi,
+                                    "manager_source_sha": source_sha,
+                                    "kernels": [record["kernel_label"] for record in groups[key]]}
                 if len(matched) == len(groups):
                     break
             except (OSError, ValueError, subprocess.SubprocessError) as error:
-                failures.append(f"{source_sha}: {type(error).__name__}: {error}")
+                detail = str(error)
+                if isinstance(error, subprocess.CalledProcessError) and error.stderr:
+                    stderr = error.stderr.decode("utf-8", errors="replace") if isinstance(error.stderr, bytes) else error.stderr
+                    detail += ": " + " ".join(stderr.split())[:400]
+                failures.append(f"{source_sha}: {type(error).__name__}: {detail}")
         missing = sorted(set(groups) - set(matched))
         if missing:
             labels = ", ".join(f"{version}-{uapi}" for version, uapi in missing)
-            detail = "; ".join(failures[-5:])
+            # Preserve the relevant downloaded APK failure instead of replacing
+            # it with errors from unrelated legacy sources at the end of a scan.
+            detail = "; ".join(failures[:5])
+            if source_failures:
+                detail += f"; {source_failures} unrelated/unreadable source candidates skipped"
             raise ValueError(f"No verified official manager for compiled kernel version/interface {labels}. "
                              f"No mismatched or re-signed APK will be uploaded. {detail}")
         output_dir.mkdir(exist_ok=True)

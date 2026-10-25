@@ -14,10 +14,12 @@ on:
       - '.github/scripts/read_sukisu_uapi.py'
       - '.github/scripts/write_sukisu_build_metadata.py'
       - '.github/scripts/match_sukisu_manager.py'
+      - '.github/scripts/cleanup_sukisu_metadata.py'
       - '.github/scripts/download-manager-from-actions.sh'
       - 'cli/tests/test_manager_pairing.py'
       - 'cli/tests/test_sukisu_build_metadata.py'
       - 'cli/tests/test_sukisu_manager_match.py'
+      - 'cli/tests/test_sukisu_metadata_cleanup.py'
       - 'cli/tests/test_matrix_manager_pairing.py'
       - 'cli/tests/test_kpm_image_integrity.py'
       - 'cli/tests/test_sukisu_susfs_hook_compat.py'
@@ -34,10 +36,12 @@ on:
       - '.github/scripts/read_sukisu_uapi.py'
       - '.github/scripts/write_sukisu_build_metadata.py'
       - '.github/scripts/match_sukisu_manager.py'
+      - '.github/scripts/cleanup_sukisu_metadata.py'
       - '.github/scripts/download-manager-from-actions.sh'
       - 'cli/tests/test_manager_pairing.py'
       - 'cli/tests/test_sukisu_build_metadata.py'
       - 'cli/tests/test_sukisu_manager_match.py'
+      - 'cli/tests/test_sukisu_metadata_cleanup.py'
       - 'cli/tests/test_matrix_manager_pairing.py'
       - 'cli/tests/test_kpm_image_integrity.py'
       - 'cli/tests/test_sukisu_susfs_hook_compat.py'
@@ -64,6 +68,7 @@ jobs:
           python3 -m unittest discover -s cli/tests -p 'test_manager_pairing.py' -v
           python3 -m unittest discover -s cli/tests -p 'test_sukisu_build_metadata.py' -v
           python3 -m unittest discover -s cli/tests -p 'test_sukisu_manager_match.py' -v
+          python3 -m unittest discover -s cli/tests -p 'test_sukisu_metadata_cleanup.py' -v
           python3 -m unittest discover -s cli/tests -p 'test_matrix_manager_pairing.py' -v
       - name: Read the actual pinned SukiSU source
         id: sukisu-source
@@ -112,7 +117,7 @@ jobs:
           # This integration fixture is not a new kernel compilation.
           directory = Path('reference-kernel-metadata')
           directory.mkdir()
-          (directory / 'reference-41068.json').write_text(json.dumps({
+          reference = {
               'schema_version': 1,
               'kernel_label': 'reference-run-40085496981-5.10.236',
               'kernel_source_sha': 'b50518a2946b7ca49e933356343526bb7dd81ff8',
@@ -121,7 +126,11 @@ jobs:
               'expected_certificate_sha256': '947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef',
               'expected_certificate_size': 0x35c,
               'manager_package_name': 'com.sukisu.ultra',
-          }))
+          }
+          (directory / 'reference-41068.json').write_text(json.dumps(reference))
+          reference['kernel_label'] = 'reference-run-40166227523'
+          reference['version_code'] = 41075
+          (directory / 'reference-41075.json').write_text(json.dumps(reference))
           PY
           python3 .github/scripts/match_sukisu_manager.py \
             --source-dir .sukisu-source-check --metadata-dir reference-kernel-metadata \

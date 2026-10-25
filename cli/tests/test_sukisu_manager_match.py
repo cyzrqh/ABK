@@ -122,8 +122,44 @@ class MatchSukisuManagerTests(unittest.TestCase):
         self.runs = [self.record(self.second, 2)]
         with self.assertRaisesRegex(ValueError, "No verified official manager"):
             self.match()
-        self.assertEqual([], self.downloads)
+        self.assertEqual([self.second], self.downloads)
         self.assertFalse(self.output.exists())
+
+    def test_official_dev_manager_can_follow_the_actual_kernel_version(self):
+        self.runs = [self.record(self.first, 1, head_branch="dev")]
+        matches = self.match()
+        self.assertEqual(self.first, matches[0]["manager_source_sha"])
+        self.assertNotIn("branch=main", self.api_paths[0])
+
+    def test_published_manifest_version_is_authoritative_over_current_git_count(self):
+        # Current history estimates first=v1, second=v2. A historical official
+        # build can nevertheless publish second's APK as v1; try the real dev
+        # APK instead of treating either estimate as an exact version contract.
+        self.write_kernel("first", self.version + 1, "1" * 40)
+        self.runs = [self.record(self.second, 2),
+                     self.record(self.first, 1, head_branch="dev")]
+        def inspect(path):
+            source = path.parents[1].name.removeprefix("download-")
+            return {"package_name": "com.sukisu.ultra",
+                    "version_code": self.version + (source == self.first),
+                    "certificate_sha256": CERTIFICATE,
+                    "certificate_size": len(CERTIFICATE_DER)}
+        matches = self.match(inspector=inspect)
+        self.assertEqual([self.second, self.first], self.downloads)
+        self.assertEqual(self.version + 1, matches[0]["version_code"])
+        self.assertEqual(self.first, matches[0]["manager_source_sha"])
+
+    def test_failed_apk_diagnostic_is_not_overwritten_by_old_header_failures(self):
+        def inspect(path):
+            raise subprocess.CalledProcessError(
+                1, ["apksigner", "verify", str(path)], stderr="actual signature failure")
+        self.runs += [self.record("f" * 40, 3)]
+        def run(arguments):
+            if any("f" * 40 in str(argument) for argument in arguments):
+                raise subprocess.CalledProcessError(1, arguments, stderr="old header missing")
+            return MATCH.run_checked(arguments)
+        with self.assertRaisesRegex(ValueError, "actual signature failure"):
+            self.match(inspector=inspect, run=run)
 
     def test_official_tag_release_can_supply_version_without_main_manager_run(self):
         paths = []
@@ -193,7 +229,7 @@ class MatchSukisuManagerTests(unittest.TestCase):
             self.match()
 
     def test_pr_and_fork_runs_cannot_supply_an_official_manager(self):
-        for changes in ({"event": "pull_request"}, {"head_branch": "dev"},
+        for changes in ({"event": "pull_request"}, {"head_branch": "unreviewed-feature"},
                         {"conclusion": "failure"},
                         {"head_repository": {"full_name": "someone/SukiSU-Ultra"}}):
             with self.subTest(changes=changes):

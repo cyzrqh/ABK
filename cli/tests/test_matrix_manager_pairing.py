@@ -101,6 +101,24 @@ class MatrixManagerPairingTests(unittest.TestCase):
         old_download = text.split("      - name: 添加 KernelSU\n", 1)[1]
         self.assertIn("if: inputs.kernelsu_variant != 'SukiSU' || !inputs.follow_kernel", old_download)
 
+    def test_internal_records_are_cached_before_cleanup_and_survive_retry(self):
+        text = (ROOT / ".github/workflows/get-manager.yml").read_text(encoding="utf-8")
+        restore = text.index("uses: actions/cache/restore@v5")
+        download = text.index("pattern: SukiSU-Metadata-*")
+        save = text.index("id: preserve-metadata")
+        match = text.index("id: match_sukisu")
+        cleanup = text.index("cleanup_sukisu_metadata.py")
+        self.assertLess(restore, download)
+        self.assertLess(download, save)
+        self.assertLess(save, match)
+        self.assertLess(match, cleanup)
+        self.assertIn("always() && inputs.kernelsu_variant == 'SukiSU'", text)
+        self.assertIn("steps.metadata-cache-check.outputs.cache-hit == 'true'", text)
+        self.assertIn("lookup-only: true", text)
+        self.assertIn("fail-on-cache-miss: true", text)
+        self.assertIn('actions: write', text)
+        self.assertIn('--run-id "$SOURCE_RUN_ID" --apply', text)
+
 
 if __name__ == "__main__":
     unittest.main()
