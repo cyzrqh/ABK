@@ -6,6 +6,25 @@ KSU_SHA="${2:?commit SHA required}"
 VARIANT_DIR="${3:?output dir required}"
 GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-}"
+KNOWN_RUN=0
+
+# The matcher has already read these official completed workflow records.
+# Keep the historical three-argument SHA lookup for other callers/variants.
+if [ "$#" -ne 3 ]; then
+  if [ "$#" -ne 7 ] || [ "$4" != "--run-id" ] || [ "$6" != "--workflow" ]; then
+    echo "::error::Expected repo SHA output-dir [--run-id ID --workflow FILE]" >&2
+    exit 1
+  fi
+  if [ "$REPO" != "SukiSU-Ultra/SukiSU-Ultra" ] || ! [[ "$KSU_SHA" =~ ^[A-Fa-f0-9]{40}$ ]] \
+    || ! [[ "$5" =~ ^[1-9][0-9]*$ ]] \
+    || { [ "$7" != "build-manager.yml" ] && [ "$7" != "release.yml" ]; }; then
+    echo "::error::Known manager run requires the official SukiSU repo, SHA, positive run ID and workflow" >&2
+    exit 1
+  fi
+  KNOWN_RUN=1
+  run_id="$5"
+  MANAGER_RUN_SOURCE="${7%.yml}"
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=resolve-ksu-ref.sh
@@ -79,7 +98,9 @@ try_download_nightly_run() {
     tmp_zip="$(mktemp "${TMPDIR:-/tmp}/manager-XXXXXX.zip")"
 
     echo "Downloading manager via nightly.link (run ${run_id}, sha ${KSU_SHA}, source ${MANAGER_RUN_SOURCE}): ${url}"
-    if ! curl -fsSL -o "$tmp_zip" "$url"; then
+    # curl retries transient HTTP 429/5xx responses, but never a missing 404
+    # artifact. Both normal artifact names always refer to this same run.
+    if ! curl -fsSL --retry 2 --retry-delay 2 --retry-max-time 30 -o "$tmp_zip" "$url"; then
       rm -f "$tmp_zip"
       continue
     fi
@@ -90,14 +111,26 @@ try_download_nightly_run() {
   return 1
 }
 
-if ! ksu_find_manager_run_id "$REPO" "$KSU_SHA"; then
-  exit 1
+if [ "$KNOWN_RUN" = "0" ]; then
+  if ! ksu_find_manager_run_id "$REPO" "$KSU_SHA"; then
+    exit 1
+  fi
+  run_id="${KSU_MANAGER_RUN_ID}"
 fi
-run_id="${KSU_MANAGER_RUN_ID}"
 if [ "${MANAGER_RUN_FALLBACK_MAIN:-0}" = "1" ]; then
   echo "::notice::Manager APK from latest successful build-manager on main (KSU ref was ${KSU_SHA})" >&2
 fi
 echo "Manager workflow run for ${REPO}@${KSU_SHA} (source=${MANAGER_RUN_SOURCE}): https://github.com/${REPO}/actions/runs/${run_id}"
+
+# A fork's token cannot download the official repo's Actions artifacts. In the
+# known-run path, use nightly.link directly and do not rediscover this same run.
+if [ "$KNOWN_RUN" = "1" ] && [ "$REPO" != "$GITHUB_REPOSITORY" ]; then
+  if try_download_nightly_run "$run_id"; then
+    exit 0
+  fi
+  echo "::error::Failed to download official manager for ${KSU_SHA} from known run ${run_id} via nightly.link" >&2
+  exit 1
+fi
 
 if [ -n "${GITHUB_REPOSITORY:-}" ] && [ "$REPO" = "$GITHUB_REPOSITORY" ]; then
   if try_download_artifact_api "$run_id"; then

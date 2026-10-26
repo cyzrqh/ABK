@@ -122,10 +122,10 @@ class ManagerPairingScriptTests(unittest.TestCase):
                         GITHUB_TOKEN="fixture-token", GITHUB_REPOSITORY=REPO)
         self.destination = self.root / "output"
 
-    def run_download(self, artifacts=(), **environment):
+    def run_download(self, artifacts=(), *, arguments=(), repo=REPO, source=SHA, **environment):
         self.env["ARTIFACTS"] = json.dumps({"artifacts": list(artifacts)})
         self.env.update(environment)
-        return subprocess.run(["bash", str(DOWNLOADER), REPO, SHA, str(self.destination)],
+        return subprocess.run(["bash", str(DOWNLOADER), repo, source, str(self.destination), *arguments],
                               env=self.env, text=True, capture_output=True, timeout=20)
 
     def urls(self):
@@ -136,6 +136,51 @@ class ManagerPairingScriptTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn("/actions/artifacts/42/zip", self.urls())
         self.assertTrue((self.destination / "SukiSU-matched.apk").is_file())
+
+    def test_legacy_three_arguments_still_resolve_run_by_exact_sha(self):
+        result = self.run_download([{"name": "Manager", "id": 42}])
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("/actions/workflows/build-manager.yml/runs?head_sha=" + SHA, self.urls())
+        self.assertIn("/actions/runs/100/artifacts", self.urls())
+
+    def test_known_cross_repo_run_downloads_same_nightly_url_without_any_api_lookup(self):
+        result = self.run_download(
+            arguments=("--run-id", "123456", "--workflow", "release.yml"),
+            GITHUB_REPOSITORY="a-fork/ABK", NIGHTLY_NAME="Manager.zip")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(
+            f"https://nightly.link/{REPO}/actions/runs/123456/Manager.zip\n", self.urls())
+        self.assertTrue((self.destination / "SukiSU-matched.apk").is_file())
+
+    def test_known_same_repo_run_uses_artifacts_without_workflow_or_head_sha_lookup(self):
+        result = self.run_download([{"name": "Manager", "id": 42}],
+                                  arguments=("--run-id", "123456", "--workflow", "build-manager.yml"))
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual([f"https://api.github.com/repos/{REPO}/actions/runs/123456/artifacts",
+                          f"https://api.github.com/repos/{REPO}/actions/artifacts/42/zip"],
+                         self.urls().splitlines())
+
+    def test_known_run_falls_back_between_normal_names_without_changing_run(self):
+        result = self.run_download(
+            arguments=("--run-id", "123456", "--workflow", "release.yml"),
+            GITHUB_REPOSITORY="a-fork/ABK", NIGHTLY_NAME="manager.zip")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual([f"https://nightly.link/{REPO}/actions/runs/123456/Manager.zip",
+                          f"https://nightly.link/{REPO}/actions/runs/123456/manager.zip"],
+                         self.urls().splitlines())
+
+    def test_invalid_known_run_is_rejected_before_any_request(self):
+        cases = [dict(arguments=("--run-id", run_id, "--workflow", "release.yml"))
+                 for run_id in ("0", "-1", "abc", "123/other")]
+        cases += [dict(arguments=("--run-id", "123", "--workflow", "other.yml")),
+                  dict(arguments=("--run-id", "123", "--workflow", "release.yml"), repo="fork/SukiSU-Ultra"),
+                  dict(arguments=("--run-id", "123", "--workflow", "release.yml"), source="main")]
+        for changes in cases:
+            with self.subTest(changes=changes):
+                result = self.run_download(**changes)
+                self.assertNotEqual(0, result.returncode)
+                self.assertIn("Known manager run requires", result.stderr)
+                self.assertFalse((self.root / "seen").exists())
 
     def test_legacy_lowercase_manager_still_downloads(self):
         result = self.run_download([{"name": "manager", "id": 43}])

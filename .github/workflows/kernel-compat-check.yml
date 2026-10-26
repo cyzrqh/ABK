@@ -138,6 +138,13 @@ jobs:
           (directory / 'reference-41074.json').write_text(json.dumps(reference))
           reference['version_code'] = 41075
           (directory / 'reference-41075.json').write_text(json.dumps(reference))
+          reference['kernel_label'] = 'reference-run-40197980139'
+          reference['version_code'] = 41077
+          (directory / 'reference-41077.json').write_text(json.dumps(reference))
+          # This official APK was uploaded successfully before only the
+          # Telegram/publishing jobs were cancelled in the upstream workflow.
+          reference['version_code'] = 41078
+          (directory / 'reference-41078.json').write_text(json.dumps(reference))
           PY
           python3 .github/scripts/match_sukisu_manager.py \
             --source-dir .sukisu-source-check --metadata-dir reference-kernel-metadata \
